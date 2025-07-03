@@ -205,45 +205,53 @@ jobs:
           find . -name "*crypto*" -type f
         fi
         
-        # Export paths for next step
-        echo "SSL_LIB_PATH=$SSL_LIB" >> $GITHUB_ENV
-        echo "CRYPTO_LIB_PATH=$CRYPTO_LIB" >> $GITHUB_ENV
+        # Export absolute paths for next step
+        echo "SSL_LIB_PATH=$(pwd)/$SSL_LIB" >> $GITHUB_ENV
+        echo "CRYPTO_LIB_PATH=$(pwd)/$CRYPTO_LIB" >> $GITHUB_ENV
         
     - name: Prepare artifacts
       run: |
-        mkdir -p artifacts/${{ matrix.arch }}/lib
-        mkdir -p artifacts/${{ matrix.arch }}/include
+        # Create artifacts directory with absolute path
+        ARTIFACTS_DIR="$(pwd)/artifacts/${{ matrix.arch }}"
+        mkdir -p "$ARTIFACTS_DIR/lib"
+        mkdir -p "$ARTIFACTS_DIR/include"
         
-        cd boringssl/build-${{ matrix.arch }}
+        echo "Artifacts directory: $ARTIFACTS_DIR"
+        echo "SSL library path: $SSL_LIB_PATH"
+        echo "Crypto library path: $CRYPTO_LIB_PATH"
         
-        # Copy static libraries using the paths found in previous step
+        # Copy static libraries using absolute paths
         if [ -n "$SSL_LIB_PATH" ] && [ -f "$SSL_LIB_PATH" ]; then
-          cp "$SSL_LIB_PATH" ../../../artifacts/${{ matrix.arch }}/lib/libssl.a
+          cp "$SSL_LIB_PATH" "$ARTIFACTS_DIR/lib/libssl.a"
           echo "Copied SSL library from: $SSL_LIB_PATH"
         else
-          echo "ERROR: SSL library path not found or invalid"
+          echo "ERROR: SSL library path not found or invalid: $SSL_LIB_PATH"
           exit 1
         fi
         
         if [ -n "$CRYPTO_LIB_PATH" ] && [ -f "$CRYPTO_LIB_PATH" ]; then
-          cp "$CRYPTO_LIB_PATH" ../../../artifacts/${{ matrix.arch }}/lib/libcrypto.a
+          cp "$CRYPTO_LIB_PATH" "$ARTIFACTS_DIR/lib/libcrypto.a"
           echo "Copied Crypto library from: $CRYPTO_LIB_PATH"
         else
-          echo "ERROR: Crypto library path not found or invalid"
+          echo "ERROR: Crypto library path not found or invalid: $CRYPTO_LIB_PATH"
           exit 1
         fi
         
         # Copy headers
-        cp -r ../../include/* ../../../artifacts/${{ matrix.arch }}/include/
+        cp -r boringssl/include/* "$ARTIFACTS_DIR/include/"
         
         # Show artifact sizes
         echo "Artifact sizes for ${{ matrix.arch }}:"
-        ls -lah ../../../artifacts/${{ matrix.arch }}/lib/
+        ls -lah "$ARTIFACTS_DIR/lib/"
         
         # Verify the copied files
         echo "Verifying copied libraries:"
-        file ../../../artifacts/${{ matrix.arch }}/lib/libssl.a
-        file ../../../artifacts/${{ matrix.arch }}/lib/libcrypto.a
+        file "$ARTIFACTS_DIR/lib/libssl.a"
+        file "$ARTIFACTS_DIR/lib/libcrypto.a"
+        
+        # Show final artifact structure
+        echo "Final artifact structure:"
+        find "$ARTIFACTS_DIR" -type f | head -10
         
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
@@ -265,11 +273,18 @@ jobs:
       run: |
         mkdir -p boringssl-android-release
         
+        echo "Available artifacts:"
+        ls -la
+        
         for arch in armeabi-v7a arm64-v8a x86 x86_64; do
           if [ -d "boringssl-android-$arch" ]; then
             mkdir -p boringssl-android-release/$arch
             cp -r boringssl-android-$arch/* boringssl-android-release/$arch/
             echo "Packaged $arch architecture"
+            
+            # Show what was packaged
+            echo "Contents of $arch:"
+            find boringssl-android-release/$arch -type f | head -5
           else
             echo "WARNING: $arch artifacts not found"
           fi
@@ -292,7 +307,7 @@ jobs:
         
         This package contains BoringSSL static libraries built for Android.
         
-        - Built from BoringSSL release: 0.20250701.0 (commit f3dcc46)
+        - Built from BoringSSL release: 0.20250701.0
         - Built with Android NDK r28b
         - Optimized with -O2 -DNDEBUG
         - Static C++ STL linking
@@ -361,7 +376,6 @@ jobs:
         cat > boringssl-android-release/BUILD_INFO.txt << EOF
         Build Date: $(date)
         BoringSSL Release: 0.20250701.0
-        BoringSSL Commit: f3dcc4660d30c35b1ccc40149a8cc170dc539132
         NDK Version: r28b (28.1.13356709)
         Architectures: armeabi-v7a, arm64-v8a, x86, x86_64
         Optimization: -O2 -DNDEBUG
@@ -397,7 +411,6 @@ jobs:
           
           **Build Details:**
           - BoringSSL release: 0.20250701.0
-          - Commit hash: f3dcc4660d30c35b1ccc40149a8cc170dc539132
           - Android NDK: r28b (28.1.13356709)
           - Optimization: -O2 -DNDEBUG
           - STL: c++_static (statically linked)
