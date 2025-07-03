@@ -16,10 +16,11 @@ jobs:
         arch: [armeabi-v7a, arm64-v8a, x86, x86_64]
     
     steps:
-    - name: Checkout BoringSSL
+    - name: Checkout BoringSSL at specific tag
       uses: actions/checkout@v4
       with:
         repository: google/boringssl
+        ref: f3dcc46
         path: boringssl
         
     - name: Setup Java
@@ -43,6 +44,13 @@ jobs:
       run: |
         cd boringssl
         sed -i 's|return X509_CERT_DIR;|return "/system/etc/security/cacerts";|g' src/crypto/x509/x509_def.cc
+        
+    - name: Verify patch applied
+      run: |
+        cd boringssl
+        echo "Checking if patch was applied:"
+        grep -n "return \"/system/etc/security/cacerts\";" src/crypto/x509/x509_def.cc || echo "Patch not found - checking original pattern:"
+        grep -n "X509_CERT_DIR" src/crypto/x509/x509_def.cc || echo "Original pattern not found"
         
     - name: Configure build variables
       run: |
@@ -94,6 +102,15 @@ jobs:
         cd boringssl/build-${{ matrix.arch }}
         ninja
         
+    - name: Verify build output
+      run: |
+        cd boringssl/build-${{ matrix.arch }}
+        echo "Build completed for ${{ matrix.arch }}"
+        echo "SSL library:"
+        ls -la ssl/libssl.a
+        echo "Crypto library:"
+        ls -la crypto/libcrypto.a
+        
     - name: Prepare artifacts
       run: |
         mkdir -p artifacts/${{ matrix.arch }}/lib
@@ -105,6 +122,10 @@ jobs:
         
         # Copy headers
         cp -r boringssl/include/* artifacts/${{ matrix.arch }}/include/
+        
+        # Show artifact sizes
+        echo "Artifact sizes for ${{ matrix.arch }}:"
+        ls -lah artifacts/${{ matrix.arch }}/lib/
         
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
@@ -134,13 +155,18 @@ jobs:
         # Create a unified include directory (same for all architectures)
         cp -r boringssl-android-release/arm64-v8a/include boringssl-android-release/
         
+        # Show final structure
+        echo "Final package structure:"
+        find boringssl-android-release -type f -name "*.a" -exec ls -lah {} \;
+        
         # Create README
         cat > boringssl-android-release/README.md << 'EOF'
-        # BoringSSL Android Build
+        # BoringSSL Android Build (Release f3dcc46)
         
         This package contains BoringSSL static libraries built for Android with the following modifications:
         - X509_CERT_DIR points to "/system/etc/security/cacerts"
-        - Built with NDK r28b
+        - Built from BoringSSL release tag: f3dcc46
+        - Built with Android NDK r28b
         - Optimized with -O2
         
         ## Architecture Support
@@ -182,33 +208,56 @@ jobs:
             }
         }
         ```
+        
+        ### Example Integration
+        ```cpp
+        #include <openssl/ssl.h>
+        #include <openssl/crypto.h>
+        
+        void init_ssl() {
+            SSL_library_init();
+            SSL_load_error_strings();
+            OpenSSL_add_all_algorithms();
+        }
+        ```
         EOF
         
         # Create build info
         cat > boringssl-android-release/BUILD_INFO.txt << EOF
         Build Date: $(date)
+        BoringSSL Version: f3dcc46
         NDK Version: r28b
         Architectures: armeabi-v7a, arm64-v8a, x86, x86_64
         Optimization: -O2
         Build Type: Release
         Modifications: X509_CERT_DIR -> /system/etc/security/cacerts
+        
+        Library Sizes:
         EOF
+        
+        # Add library sizes to build info
+        for arch in armeabi-v7a arm64-v8a x86 x86_64; do
+          echo "$arch:" >> boringssl-android-release/BUILD_INFO.txt
+          ls -lah boringssl-android-release/$arch/lib/ >> boringssl-android-release/BUILD_INFO.txt
+          echo "" >> boringssl-android-release/BUILD_INFO.txt
+        done
         
         tar -czf boringssl-android-release.tar.gz boringssl-android-release/
         
     - name: Create Release
       uses: softprops/action-gh-release@v1
       with:
-        tag_name: android-build-${{ github.run_number }}
-        name: BoringSSL Android Build ${{ github.run_number }}
+        tag_name: boringssl-f3dcc46-android-${{ github.run_number }}
+        name: BoringSSL f3dcc46 Android Build ${{ github.run_number }}
         body: |
-          BoringSSL static libraries built for Android
+          BoringSSL static libraries built for Android from release tag **f3dcc46**
           
           **Features:**
+          - Built from BoringSSL release f3dcc46
           - Built with Android NDK r28b
           - Optimized with -O2 flags
           - Static libraries for all major Android architectures
-          - Modified X509_CERT_DIR to use Android system certs
+          - Modified X509_CERT_DIR to use Android system certs (`/system/etc/security/cacerts`)
           
           **Architectures included:**
           - armeabi-v7a (32-bit ARM)
@@ -216,8 +265,23 @@ jobs:
           - x86 (32-bit Intel)
           - x86_64 (64-bit Intel)
           
+          **Libraries provided:**
+          - `libssl.a` - SSL/TLS implementation
+          - `libcrypto.a` - Cryptographic functions
+          - Complete header files for integration
+          
           **Usage:**
-          Extract the archive and integrate into your Android project using the provided CMakeLists.txt example.
+          1. Download and extract `boringssl-android-release.tar.gz`
+          2. Copy to your Android project
+          3. Use the provided CMakeLists.txt example for integration
+          4. Ensure your `build.gradle` uses NDK version "28.1.13356709"
+          
+          **Verification:**
+          All libraries are built as static archives and can be verified with:
+          ```bash
+          file path/to/lib*.a
+          nm -D path/to/lib*.a | head -20
+          ```
         files: |
           boringssl-android-release.tar.gz
         draft: false
