@@ -16,12 +16,14 @@ jobs:
         arch: [armeabi-v7a, arm64-v8a, x86, x86_64]
     
     steps:
-    - name: Checkout BoringSSL at specific tag
+    - name: Checkout BoringSSL with submodules
       uses: actions/checkout@v4
       with:
         repository: google/boringssl
         ref: f3dcc46
         path: boringssl
+        submodules: recursive
+        fetch-depth: 0
         
     - name: Setup Java
       uses: actions/setup-java@v4
@@ -40,17 +42,27 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y cmake ninja-build
         
+    - name: Verify BoringSSL checkout
+      run: |
+        cd boringssl
+        echo "Current commit:"
+        git rev-parse HEAD
+        echo "Checking submodules:"
+        git submodule status
+        echo "Checking for required files:"
+        ls -la src/crypto/x509/x509_def.cc
+        
     - name: Apply Android cacerts patch
       run: |
         cd boringssl
+        echo "Before patch:"
+        grep -n "X509_CERT_DIR" src/crypto/x509/x509_def.cc || echo "Pattern not found"
+        
+        # Apply the patch
         sed -i 's|return X509_CERT_DIR;|return "/system/etc/security/cacerts";|g' src/crypto/x509/x509_def.cc
         
-    - name: Verify patch applied
-      run: |
-        cd boringssl
-        echo "Checking if patch was applied:"
-        grep -n "return \"/system/etc/security/cacerts\";" src/crypto/x509/x509_def.cc || echo "Patch not found - checking original pattern:"
-        grep -n "X509_CERT_DIR" src/crypto/x509/x509_def.cc || echo "Original pattern not found"
+        echo "After patch:"
+        grep -n "return \"/system/etc/security/cacerts\";" src/crypto/x509/x509_def.cc || echo "Patch not applied"
         
     - name: Configure build variables
       run: |
@@ -60,24 +72,22 @@ jobs:
           armeabi-v7a)
             echo "ANDROID_ABI=armeabi-v7a" >> $GITHUB_ENV
             echo "ANDROID_PLATFORM=android-21" >> $GITHUB_ENV
-            echo "CMAKE_TOOLCHAIN_FILE=${{ steps.setup-ndk.outputs.ndk-path }}/build/cmake/android.toolchain.cmake" >> $GITHUB_ENV
             ;;
           arm64-v8a)
             echo "ANDROID_ABI=arm64-v8a" >> $GITHUB_ENV
             echo "ANDROID_PLATFORM=android-21" >> $GITHUB_ENV
-            echo "CMAKE_TOOLCHAIN_FILE=${{ steps.setup-ndk.outputs.ndk-path }}/build/cmake/android.toolchain.cmake" >> $GITHUB_ENV
             ;;
           x86)
             echo "ANDROID_ABI=x86" >> $GITHUB_ENV
             echo "ANDROID_PLATFORM=android-21" >> $GITHUB_ENV
-            echo "CMAKE_TOOLCHAIN_FILE=${{ steps.setup-ndk.outputs.ndk-path }}/build/cmake/android.toolchain.cmake" >> $GITHUB_ENV
             ;;
           x86_64)
             echo "ANDROID_ABI=x86_64" >> $GITHUB_ENV
             echo "ANDROID_PLATFORM=android-21" >> $GITHUB_ENV
-            echo "CMAKE_TOOLCHAIN_FILE=${{ steps.setup-ndk.outputs.ndk-path }}/build/cmake/android.toolchain.cmake" >> $GITHUB_ENV
             ;;
         esac
+        
+        echo "CMAKE_TOOLCHAIN_FILE=${{ steps.setup-ndk.outputs.ndk-path }}/build/cmake/android.toolchain.cmake" >> $GITHUB_ENV
         
     - name: Create build directory
       run: |
@@ -86,21 +96,25 @@ jobs:
     - name: Configure CMake
       run: |
         cd boringssl/build-${{ matrix.arch }}
+        
+        echo "Configuring for ${{ matrix.arch }} with NDK at ${{ steps.setup-ndk.outputs.ndk-path }}"
+        
         cmake .. \
           -G Ninja \
           -DCMAKE_TOOLCHAIN_FILE=${{ env.CMAKE_TOOLCHAIN_FILE }} \
           -DANDROID_ABI=${{ env.ANDROID_ABI }} \
           -DANDROID_PLATFORM=${{ env.ANDROID_PLATFORM }} \
           -DCMAKE_BUILD_TYPE=Release \
-          -DCMAKE_C_FLAGS="-O2" \
-          -DCMAKE_CXX_FLAGS="-O2" \
+          -DCMAKE_C_FLAGS="-O2 -DNDEBUG" \
+          -DCMAKE_CXX_FLAGS="-O2 -DNDEBUG" \
           -DBUILD_SHARED_LIBS=OFF \
-          -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+          -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+          -DANDROID_STL=c++_static
           
     - name: Build BoringSSL
       run: |
         cd boringssl/build-${{ matrix.arch }}
-        ninja
+        ninja -v
         
     - name: Verify build output
       run: |
@@ -108,8 +122,10 @@ jobs:
         echo "Build completed for ${{ matrix.arch }}"
         echo "SSL library:"
         ls -la ssl/libssl.a
+        file ssl/libssl.a
         echo "Crypto library:"
         ls -la crypto/libcrypto.a
+        file crypto/libcrypto.a
         
     - name: Prepare artifacts
       run: |
@@ -155,19 +171,20 @@ jobs:
         # Create a unified include directory (same for all architectures)
         cp -r boringssl-android-release/arm64-v8a/include boringssl-android-release/
         
-        # Show final structure
+        # Show final structure and sizes
         echo "Final package structure:"
         find boringssl-android-release -type f -name "*.a" -exec ls -lah {} \;
         
         # Create README
         cat > boringssl-android-release/README.md << 'EOF'
-        # BoringSSL Android Build (Release f3dcc46)
+        # BoringSSL Android Build (Commit f3dcc46)
         
         This package contains BoringSSL static libraries built for Android with the following modifications:
         - X509_CERT_DIR points to "/system/etc/security/cacerts"
-        - Built from BoringSSL release tag: f3dcc46
+        - Built from BoringSSL commit: f3dcc46
         - Built with Android NDK r28b
-        - Optimized with -O2
+        - Optimized with -O2 -DNDEBUG
+        - Static C++ STL linking
         
         ## Architecture Support
         - armeabi-v7a (32-bit ARM)
@@ -177,11 +194,31 @@ jobs:
         
         ## Usage in Android Project
         
+        ### Directory Structure
+        ```
+        your-project/
+        ├── app/
+        │   └── src/main/cpp/
+        │       ├── CMakeLists.txt
+        │       └── native-lib.cpp
+        └── boringssl-android/
+            ├── include/
+            │   └── openssl/
+            ├── armeabi-v7a/lib/
+            ├── arm64-v8a/lib/
+            ├── x86/lib/
+            └── x86_64/lib/
+        ```
+        
         ### CMakeLists.txt
         ```cmake
-        # Add BoringSSL
-        set(BORINGSSL_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/boringssl-android)
+        cmake_minimum_required(VERSION 3.18.1)
+        project("your_app")
         
+        # Set BoringSSL path
+        set(BORINGSSL_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../../../boringssl-android)
+        
+        # Import BoringSSL libraries
         add_library(ssl STATIC IMPORTED)
         set_target_properties(ssl PROPERTIES
             IMPORTED_LOCATION ${BORINGSSL_ROOT}/${ANDROID_ABI}/lib/libssl.a
@@ -192,44 +229,87 @@ jobs:
             IMPORTED_LOCATION ${BORINGSSL_ROOT}/${ANDROID_ABI}/lib/libcrypto.a
         )
         
-        target_include_directories(your_target PRIVATE ${BORINGSSL_ROOT}/include)
-        target_link_libraries(your_target ssl crypto)
+        # Your native library
+        add_library(your_app SHARED native-lib.cpp)
+        
+        # Include directories and link libraries
+        target_include_directories(your_app PRIVATE ${BORINGSSL_ROOT}/include)
+        target_link_libraries(your_app ssl crypto log)
         ```
         
-        ### Gradle (build.gradle)
+        ### build.gradle (Module: app)
         ```gradle
         android {
             ndkVersion "28.1.13356709"
+            compileSdk 34
             
             defaultConfig {
+                minSdk 21
+                targetSdk 34
+                
                 ndk {
                     abiFilters 'armeabi-v7a', 'arm64-v8a', 'x86', 'x86_64'
+                }
+            }
+            
+            externalNativeBuild {
+                cmake {
+                    path "src/main/cpp/CMakeLists.txt"
+                    version "3.18.1"
                 }
             }
         }
         ```
         
-        ### Example Integration
+        ### Example Usage
         ```cpp
+        #include <jni.h>
+        #include <string>
         #include <openssl/ssl.h>
         #include <openssl/crypto.h>
+        #include <openssl/evp.h>
         
-        void init_ssl() {
+        extern "C" JNIEXPORT jstring JNICALL
+        Java_com_yourpackage_MainActivity_getBoringSSLVersion(JNIEnv *env, jobject /* this */) {
+            // Initialize BoringSSL
             SSL_library_init();
             SSL_load_error_strings();
-            OpenSSL_add_all_algorithms();
+            
+            // Get version info
+            std::string version = "BoringSSL - ";
+            version += SSLeay_version(SSLEAY_VERSION);
+            
+            return env->NewStringUTF(version.c_str());
         }
+        ```
+        
+        ## Troubleshooting
+        
+        ### Common Issues:
+        1. **Undefined symbols**: Make sure to link both `ssl` and `crypto` libraries
+        2. **Architecture mismatch**: Ensure your `abiFilters` match the provided architectures
+        3. **NDK version**: Use exactly NDK version "28.1.13356709"
+        4. **Missing headers**: Verify the include path points to the correct directory
+        
+        ### Verification:
+        ```bash
+        # Check library architecture
+        file boringssl-android/arm64-v8a/lib/libssl.a
+        
+        # Check symbols
+        nm boringssl-android/arm64-v8a/lib/libssl.a | grep SSL_library_init
         ```
         EOF
         
-        # Create build info
+        # Create build info with commit hash
         cat > boringssl-android-release/BUILD_INFO.txt << EOF
         Build Date: $(date)
-        BoringSSL Version: f3dcc46
-        NDK Version: r28b
+        BoringSSL Commit: f3dcc46
+        NDK Version: r28b (28.1.13356709)
         Architectures: armeabi-v7a, arm64-v8a, x86, x86_64
-        Optimization: -O2
+        Optimization: -O2 -DNDEBUG
         Build Type: Release
+        STL: c++_static
         Modifications: X509_CERT_DIR -> /system/etc/security/cacerts
         
         Library Sizes:
@@ -242,7 +322,12 @@ jobs:
           echo "" >> boringssl-android-release/BUILD_INFO.txt
         done
         
+        # Create compressed archive
         tar -czf boringssl-android-release.tar.gz boringssl-android-release/
+        
+        # Show final archive info
+        echo "Final archive:"
+        ls -lah boringssl-android-release.tar.gz
         
     - name: Create Release
       uses: softprops/action-gh-release@v1
@@ -250,38 +335,44 @@ jobs:
         tag_name: boringssl-f3dcc46-android-${{ github.run_number }}
         name: BoringSSL f3dcc46 Android Build ${{ github.run_number }}
         body: |
-          BoringSSL static libraries built for Android from release tag **f3dcc46**
+          BoringSSL static libraries built for Android from commit **f3dcc46**
           
-          **Features:**
-          - Built from BoringSSL release f3dcc46
-          - Built with Android NDK r28b
-          - Optimized with -O2 flags
-          - Static libraries for all major Android architectures
-          - Modified X509_CERT_DIR to use Android system certs (`/system/etc/security/cacerts`)
+          **Build Details:**
+          - BoringSSL commit: f3dcc46
+          - Android NDK: r28b (28.1.13356709)
+          - Optimization: -O2 -DNDEBUG
+          - STL: c++_static (statically linked)
+          - Custom patch: X509_CERT_DIR → `/system/etc/security/cacerts`
           
-          **Architectures included:**
-          - armeabi-v7a (32-bit ARM)
-          - arm64-v8a (64-bit ARM) 
-          - x86 (32-bit Intel)
-          - x86_64 (64-bit Intel)
+          **Architectures:**
+          - ✅ armeabi-v7a (32-bit ARM)
+          - ✅ arm64-v8a (64-bit ARM) 
+          - ✅ x86 (32-bit Intel)
+          - ✅ x86_64 (64-bit Intel)
           
-          **Libraries provided:**
+          **What's included:**
           - `libssl.a` - SSL/TLS implementation
-          - `libcrypto.a` - Cryptographic functions
-          - Complete header files for integration
+          - `libcrypto.a` - Cryptographic functions  
+          - Complete OpenSSL-compatible headers
+          - Integration examples and documentation
           
-          **Usage:**
-          1. Download and extract `boringssl-android-release.tar.gz`
-          2. Copy to your Android project
-          3. Use the provided CMakeLists.txt example for integration
-          4. Ensure your `build.gradle` uses NDK version "28.1.13356709"
+          **Quick Start:**
+          1. Download `boringssl-android-release.tar.gz`
+          2. Extract to your Android project root
+          3. Update your `CMakeLists.txt` with the provided example
+          4. Set `ndkVersion "28.1.13356709"` in `build.gradle`
+          5. Build your project
           
           **Verification:**
-          All libraries are built as static archives and can be verified with:
           ```bash
-          file path/to/lib*.a
-          nm -D path/to/lib*.a | head -20
+          # Check library details
+          file boringssl-android/*/lib/*.a
+          
+          # Verify symbols
+          nm boringssl-android/arm64-v8a/lib/libcrypto.a | grep -i ssl
           ```
+          
+          Ready to use in your Android NDK project! 🚀
         files: |
           boringssl-android-release.tar.gz
         draft: false
