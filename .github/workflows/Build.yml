@@ -42,22 +42,6 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y cmake ninja-build
         
-        # Verify installations
-        echo "CMake version:"
-        cmake --version
-        echo "Ninja version:"
-        ninja --version
-        echo "Ninja path:"
-        which ninja
-        
-    - name: Verify NDK setup
-      run: |
-        echo "NDK path from setup-ndk: ${{ steps.setup-ndk.outputs.ndk-path }}"
-        echo "Checking NDK directory:"
-        ls -la "${{ steps.setup-ndk.outputs.ndk-path }}" || echo "NDK path not accessible"
-        echo "Checking for toolchain file:"
-        ls -la "${{ steps.setup-ndk.outputs.ndk-path }}/build/cmake/android.toolchain.cmake" || echo "Toolchain file not found"
-        
     - name: Verify BoringSSL checkout and find x509_def.cc
       run: |
         cd boringssl
@@ -65,14 +49,9 @@ jobs:
         git describe --tags --always
         echo "Commit hash:"
         git rev-parse HEAD
-        echo "Checking submodules:"
-        git submodule status
         echo ""
         echo "Finding x509_def.cc file:"
         find . -name "x509_def.cc" -type f
-        echo ""
-        echo "Exploring crypto/x509 directory structure:"
-        find . -path "*/crypto/x509*" -name "*.cc" | head -10
         echo ""
         echo "Looking for X509_CERT_DIR references:"
         grep -r "X509_CERT_DIR" . --include="*.cc" --include="*.c" || echo "No X509_CERT_DIR found in .cc/.c files"
@@ -105,8 +84,6 @@ jobs:
           grep -B2 -A2 "return \"/system/etc/security/cacerts\";" "$X509_DEF_FILE" || echo "No context found"
         else
           echo "WARNING: Could not find file containing X509_CERT_DIR - continuing without patch"
-          echo "Available files in crypto directory:"
-          find . -path "*/crypto/*" -name "*.cc" | head -20
         fi
         
     - name: Configure build variables
@@ -115,21 +92,7 @@ jobs:
         
         if [ -z "$NDK_PATH" ] || [ ! -d "$NDK_PATH" ]; then
           echo "ERROR: NDK path is empty or doesn't exist"
-          echo "Trying to find NDK in common locations..."
-          
-          # Try common NDK locations
-          for ndk_dir in /usr/local/lib/android/sdk/ndk/* $ANDROID_HOME/ndk/* $ANDROID_NDK_ROOT; do
-            if [ -d "$ndk_dir" ] && [ -f "$ndk_dir/build/cmake/android.toolchain.cmake" ]; then
-              NDK_PATH="$ndk_dir"
-              echo "Found NDK at: $NDK_PATH"
-              break
-            fi
-          done
-          
-          if [ -z "$NDK_PATH" ]; then
-            echo "ERROR: Could not find NDK installation"
-            exit 1
-          fi
+          exit 1
         fi
         
         echo "Using NDK path: $NDK_PATH"
@@ -156,14 +119,6 @@ jobs:
         
         echo "CMAKE_TOOLCHAIN_FILE=$NDK_PATH/build/cmake/android.toolchain.cmake" >> $GITHUB_ENV
         
-        # Verify the toolchain file exists
-        if [ ! -f "$NDK_PATH/build/cmake/android.toolchain.cmake" ]; then
-          echo "ERROR: Android toolchain file not found at $NDK_PATH/build/cmake/android.toolchain.cmake"
-          exit 1
-        fi
-        
-        echo "Toolchain file verified: $NDK_PATH/build/cmake/android.toolchain.cmake"
-        
     - name: Create build directory
       run: |
         mkdir -p boringssl/build-${{ matrix.arch }}
@@ -178,16 +133,6 @@ jobs:
         echo "Android ABI: $ANDROID_ABI"
         echo "Android Platform: $ANDROID_PLATFORM"
         echo "Toolchain File: $CMAKE_TOOLCHAIN_FILE"
-        echo "Ninja path: $(which ninja)"
-        
-        # Verify all required variables are set
-        if [ -z "$NDK_ROOT" ] || [ -z "$ANDROID_ABI" ] || [ -z "$CMAKE_TOOLCHAIN_FILE" ]; then
-          echo "ERROR: Required environment variables not set"
-          echo "NDK_ROOT: $NDK_ROOT"
-          echo "ANDROID_ABI: $ANDROID_ABI"
-          echo "CMAKE_TOOLCHAIN_FILE: $CMAKE_TOOLCHAIN_FILE"
-          exit 1
-        fi
         
         cmake .. \
           -G Ninja \
@@ -207,10 +152,6 @@ jobs:
         cd boringssl/build-${{ matrix.arch }}
         
         echo "=== Starting Build ==="
-        echo "Build directory contents:"
-        ls -la
-        
-        echo "Running ninja build..."
         ninja -v
         
     - name: Verify build output
@@ -219,39 +160,90 @@ jobs:
         echo "Build completed for ${{ matrix.arch }}"
         
         echo "=== Build Output Verification ==="
-        echo "SSL library:"
-        if [ -f ssl/libssl.a ]; then
-          ls -la ssl/libssl.a
-          file ssl/libssl.a
-        else
-          echo "ERROR: libssl.a not found"
-          find . -name "libssl*" -type f
+        echo "Build directory contents:"
+        ls -la
+        
+        echo ""
+        echo "Looking for all library files:"
+        find . -name "*.a" -type f | head -20
+        
+        echo ""
+        echo "Checking for SSL library:"
+        SSL_LIB=""
+        for path in ssl/libssl.a libssl.a ./libssl.a; do
+          if [ -f "$path" ]; then
+            SSL_LIB="$path"
+            echo "Found SSL library at: $SSL_LIB"
+            ls -la "$SSL_LIB"
+            file "$SSL_LIB"
+            break
+          fi
+        done
+        
+        if [ -z "$SSL_LIB" ]; then
+          echo "ERROR: SSL library not found"
+          echo "Available files:"
+          find . -name "*ssl*" -type f
         fi
         
-        echo "Crypto library:"
-        if [ -f crypto/libcrypto.a ]; then
-          ls -la crypto/libcrypto.a
-          file crypto/libcrypto.a
-        else
-          echo "ERROR: libcrypto.a not found"
-          find . -name "libcrypto*" -type f
+        echo ""
+        echo "Checking for Crypto library:"
+        CRYPTO_LIB=""
+        for path in crypto/libcrypto.a libcrypto.a ./libcrypto.a; do
+          if [ -f "$path" ]; then
+            CRYPTO_LIB="$path"
+            echo "Found Crypto library at: $CRYPTO_LIB"
+            ls -la "$CRYPTO_LIB"
+            file "$CRYPTO_LIB"
+            break
+          fi
+        done
+        
+        if [ -z "$CRYPTO_LIB" ]; then
+          echo "ERROR: Crypto library not found"
+          echo "Available files:"
+          find . -name "*crypto*" -type f
         fi
+        
+        # Export paths for next step
+        echo "SSL_LIB_PATH=$SSL_LIB" >> $GITHUB_ENV
+        echo "CRYPTO_LIB_PATH=$CRYPTO_LIB" >> $GITHUB_ENV
         
     - name: Prepare artifacts
       run: |
         mkdir -p artifacts/${{ matrix.arch }}/lib
         mkdir -p artifacts/${{ matrix.arch }}/include
         
-        # Copy static libraries
-        cp boringssl/build-${{ matrix.arch }}/ssl/libssl.a artifacts/${{ matrix.arch }}/lib/
-        cp boringssl/build-${{ matrix.arch }}/crypto/libcrypto.a artifacts/${{ matrix.arch }}/lib/
+        cd boringssl/build-${{ matrix.arch }}
+        
+        # Copy static libraries using the paths found in previous step
+        if [ -n "$SSL_LIB_PATH" ] && [ -f "$SSL_LIB_PATH" ]; then
+          cp "$SSL_LIB_PATH" ../../../artifacts/${{ matrix.arch }}/lib/libssl.a
+          echo "Copied SSL library from: $SSL_LIB_PATH"
+        else
+          echo "ERROR: SSL library path not found or invalid"
+          exit 1
+        fi
+        
+        if [ -n "$CRYPTO_LIB_PATH" ] && [ -f "$CRYPTO_LIB_PATH" ]; then
+          cp "$CRYPTO_LIB_PATH" ../../../artifacts/${{ matrix.arch }}/lib/libcrypto.a
+          echo "Copied Crypto library from: $CRYPTO_LIB_PATH"
+        else
+          echo "ERROR: Crypto library path not found or invalid"
+          exit 1
+        fi
         
         # Copy headers
-        cp -r boringssl/include/* artifacts/${{ matrix.arch }}/include/
+        cp -r ../../include/* ../../../artifacts/${{ matrix.arch }}/include/
         
         # Show artifact sizes
         echo "Artifact sizes for ${{ matrix.arch }}:"
-        ls -lah artifacts/${{ matrix.arch }}/lib/
+        ls -lah ../../../artifacts/${{ matrix.arch }}/lib/
+        
+        # Verify the copied files
+        echo "Verifying copied libraries:"
+        file ../../../artifacts/${{ matrix.arch }}/lib/libssl.a
+        file ../../../artifacts/${{ matrix.arch }}/lib/libcrypto.a
         
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
@@ -274,12 +266,21 @@ jobs:
         mkdir -p boringssl-android-release
         
         for arch in armeabi-v7a arm64-v8a x86 x86_64; do
-          mkdir -p boringssl-android-release/$arch
-          cp -r boringssl-android-$arch/* boringssl-android-release/$arch/
+          if [ -d "boringssl-android-$arch" ]; then
+            mkdir -p boringssl-android-release/$arch
+            cp -r boringssl-android-$arch/* boringssl-android-release/$arch/
+            echo "Packaged $arch architecture"
+          else
+            echo "WARNING: $arch artifacts not found"
+          fi
         done
         
         # Create a unified include directory (same for all architectures)
-        cp -r boringssl-android-release/arm64-v8a/include boringssl-android-release/
+        if [ -d "boringssl-android-arm64-v8a/include" ]; then
+          cp -r boringssl-android-arm64-v8a/include boringssl-android-release/
+        elif [ -d "boringssl-android-armeabi-v7a/include" ]; then
+          cp -r boringssl-android-armeabi-v7a/include boringssl-android-release/
+        fi
         
         # Show final structure and sizes
         echo "Final package structure:"
@@ -289,8 +290,8 @@ jobs:
         cat > boringssl-android-release/README.md << 'EOF'
         # BoringSSL Android Build (Release 0.20250701.0)
         
-        This package contains BoringSSL static libraries built for Android with the following modifications:
-        - X509_CERT_DIR points to "/system/etc/security/cacerts" (if applicable)
+        This package contains BoringSSL static libraries built for Android.
+        
         - Built from BoringSSL release: 0.20250701.0 (commit f3dcc46)
         - Built with Android NDK r28b
         - Optimized with -O2 -DNDEBUG
@@ -372,9 +373,11 @@ jobs:
         
         # Add library sizes to build info
         for arch in armeabi-v7a arm64-v8a x86 x86_64; do
-          echo "$arch:" >> boringssl-android-release/BUILD_INFO.txt
-          ls -lah boringssl-android-release/$arch/lib/ >> boringssl-android-release/BUILD_INFO.txt
-          echo "" >> boringssl-android-release/BUILD_INFO.txt
+          if [ -d "boringssl-android-release/$arch/lib" ]; then
+            echo "$arch:" >> boringssl-android-release/BUILD_INFO.txt
+            ls -lah boringssl-android-release/$arch/lib/ >> boringssl-android-release/BUILD_INFO.txt
+            echo "" >> boringssl-android-release/BUILD_INFO.txt
+          fi
         done
         
         # Create compressed archive
