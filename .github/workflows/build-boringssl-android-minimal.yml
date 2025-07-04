@@ -8,6 +8,10 @@ on:
         required: true
         default: '0.20250701.0'
         type: string
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
 
 jobs:
   build-boringssl:
@@ -40,24 +44,23 @@ jobs:
     - name: Install build dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y cmake ninja-build bc
+        sudo apt-get install -y cmake ninja-build golang-go bc
     
-    - name: Setup Go (required for BoringSSL build)
-      uses: actions/setup-go@v4
-      with:
-        go-version: '1.21'
-    
-    - name: Generate build files
+    - name: Generate source files first
       run: |
-        # First run the general generator
-        # python3 util/generate_build_files.py
+        # Create the gen directory structure
+        mkdir -p src/gen
         
-        # Then run for Android specifically
+        # Run Go to generate the source files
+        cd src
+        go run util/all_tests.go -build_dir ../build/temp
+        cd ..
+        
+        # Generate the sources.json and other build files
+        python3 util/generate_build_files.py sources.json
+        
+        # Now generate Android-specific build files
         python3 util/generate_build_files.py android
-        
-        # Verify files were generated
-        ls -la src/gen/ || echo "src/gen directory not found, continuing..."
-        ls -la . | grep -E "\.(mk|bp)$" || echo "No .mk or .bp files found, continuing..."
     
     - name: Create build directories
       run: |
@@ -150,44 +153,19 @@ jobs:
         for lib in *.a; do
           echo "Original size of $lib:"
           ls -lh $lib
-          
-          # Find appropriate strip tool for each architecture
-          case $lib in
-            *armeabi-v7a*)
-              STRIP_TOOL="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
-              ;;
-            *arm64-v8a*)
-              STRIP_TOOL="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
-              ;;
-            *x86_64*)
-              STRIP_TOOL="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
-              ;;
-            *x86*)
-              STRIP_TOOL="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
-              ;;
-            *)
-              STRIP_TOOL="strip"
-              ;;
-          esac
-          
-          if [ -f "$STRIP_TOOL" ]; then
-            $STRIP_TOOL $lib
-          else
-            echo "Strip tool not found, using system strip"
-            strip $lib 2>/dev/null || echo "Strip failed, continuing..."
-          fi
-          
-          echo "Final size of $lib:"
+          $NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip $lib
+          echo "Stripped size of $lib:"
           ls -lh $lib
-          size_bytes=$(stat -c%s $lib)
-          size_mb=$(echo "scale=2; $size_bytes/1024/1024" | bc -l)
-          echo "Size: ${size_mb}MB (${size_bytes} bytes)"
+          echo "Size in bytes: $(stat -c%s $lib)"
+          size_mb=$(echo "scale=2; $(stat -c%s $lib)/1024/1024" | bc)
+          echo "Size in MB: $size_mb"
           
-          # Check if under 4MB
-          if (( $(echo "$size_mb < 4.0" | bc -l) )); then
-            echo "✅ $lib is under 4MB"
+          # Check if size is under 4MB
+          size_bytes=$(stat -c%s $lib)
+          if [ $size_bytes -gt 4194304 ]; then
+            echo "WARNING: $lib is larger than 4MB!"
           else
-            echo "⚠️  $lib is over 4MB"
+            echo "✓ $lib is under 4MB limit"
           fi
           echo "---"
         done
@@ -201,65 +179,55 @@ jobs:
       run: |
         cd output
         mkdir -p boringssl-android/{lib/{armeabi-v7a,arm64-v8a,x86,x86_64},include}
-        
-        # Copy libraries
         cp libcrypto_armeabi-v7a.a boringssl-android/lib/armeabi-v7a/libcrypto.a
         cp libcrypto_arm64-v8a.a boringssl-android/lib/arm64-v8a/libcrypto.a
         cp libcrypto_x86.a boringssl-android/lib/x86/libcrypto.a
         cp libcrypto_x86_64.a boringssl-android/lib/x86_64/libcrypto.a
-        
-        # Copy headers
         cp -r include/* boringssl-android/include/
         
-        # Create CMakeLists.txt for easy integration
+        # Create a simple CMakeLists.txt for easy integration
         cat > boringssl-android/CMakeLists.txt << 'EOF'
         cmake_minimum_required(VERSION 3.10)
         project(BoringSSL)
         
-        # BoringSSL crypto library
         add_library(crypto STATIC IMPORTED)
         set_target_properties(crypto PROPERTIES
             IMPORTED_LOCATION ${CMAKE_CURRENT_SOURCE_DIR}/lib/${ANDROID_ABI}/libcrypto.a
             INTERFACE_INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/include
         )
         
-        # For compatibility, also create boringssl_crypto target
-        add_library(boringssl_crypto ALIAS crypto)
+        # For curl integration
+        add_library(BoringSSL::Crypto ALIAS crypto)
         EOF
         
-        # Create README
+        # Create README with integration instructions
         cat > boringssl-android/README.md << 'EOF'
-        # BoringSSL Android Build
+        # BoringSSL Android Libraries
         
-        This package contains BoringSSL static libraries built for Android.
+        Built with NDK r28b, optimized for size with -O2 -flto flags.
         
-        ## Architectures
+        ## Usage with CMake:
+        ```cmake
+        add_subdirectory(path/to/boringssl-android)
+        target_link_libraries(your_target BoringSSL::Crypto)
+        ```
+        
+        ## Architecture Support:
         - armeabi-v7a
         - arm64-v8a  
         - x86
         - x86_64
         
-        ## Usage in CMake
-        ```cmake
-        add_subdirectory(path/to/boringssl-android)
-        target_link_libraries(your_target crypto)
-        ```
-        
-        ## Manual Usage
-        Include path: `include/`
-        Libraries: `lib/${ANDROID_ABI}/libcrypto.a`
+        ## Integration with curl:
+        Use OPENSSL_ROOT_DIR pointing to this directory when configuring curl.
         EOF
         
-        # Create the archive
         tar -czf boringssl-android.tar.gz boringssl-android/
-        
-        echo "Archive created: boringssl-android.tar.gz"
-        ls -lh boringssl-android.tar.gz
     
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: boringssl-android-${{ inputs.boringssl_ref || '0.20250701.0' }}
+        name: boringssl-android-${{ github.run_number }}
         path: |
           output/boringssl-android.tar.gz
           output/libcrypto_*.a
@@ -271,24 +239,18 @@ jobs:
         echo "Reference: ${{ inputs.boringssl_ref || '0.20250701.0' }}"
         echo "NDK Version: r28b"
         echo "Optimization: -O2 with LTO"
-        echo "Build Date: $(date)"
+        echo "Run Number: ${{ github.run_number }}"
         echo ""
-        echo "📦 Library sizes:"
+        echo "Library sizes:"
         cd output
         total_size=0
         for lib in libcrypto_*.a; do
-          if [ -f "$lib" ]; then
-            size_bytes=$(stat -c%s $lib)
-            size_mb=$(echo "scale=2; $size_bytes/1024/1024" | bc -l)
-            total_size=$(echo "$total_size + $size_bytes" | bc -l)
-            arch=$(echo $lib | sed 's/libcrypto_\(.*\)\.a/\1/')
-            printf "%-15s: %6.2fMB (%d bytes)\n" "$arch" "$size_mb" "$size_bytes"
-          fi
+          size_bytes=$(stat -c%s $lib)
+          size_mb=$(echo "scale=2; $size_bytes/1024/1024" | bc)
+          total_size=$((total_size + size_bytes))
+          echo "$lib: ${size_mb}MB (${size_bytes} bytes)"
         done
-        
-        total_mb=$(echo "scale=2; $total_size/1024/1024" | bc -l)
+        total_mb=$(echo "scale=2; $total_size/1024/1024" | bc)
         echo ""
-        echo "📊 Total size: ${total_mb}MB"
-        echo ""
-        echo "✅ Build completed successfully!"
-        echo "📁 Download the 'boringssl-android-${{ inputs.boringssl_ref || '0.20250701.0' }}' artifact"
+        echo "Total size: ${total_mb}MB"
+        echo "Archive ready for curl integration!"
