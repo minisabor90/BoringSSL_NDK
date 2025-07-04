@@ -1,22 +1,18 @@
-# .github/workflows/build-boringssl-android-minimal.yml
-name: Build Drop-In BoringSSL for Android (HTTP/3 Optimized)
+name: Build Minimal BoringSSL for Android
 
 on:
-  push:
-    branches: [ main, master ]
-  pull_request:
-    branches: [ main, master ]
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
+
     strategy:
       matrix:
         arch: [armeabi-v7a, arm64-v8a, x86, x86_64]
 
     steps:
-      - name: Checkout BoringSSL 0.20250701.0
+      - name: Checkout BoringSSL
         uses: actions/checkout@v4
         with:
           repository: google/boringssl
@@ -25,100 +21,134 @@ jobs:
           submodules: recursive
 
       - name: Setup Android NDK
-        uses: nttld/setup-ndk@v1
-        id: ndk
+        uses: actions/setup-ndk@v1
         with:
           ndk-version: r28b
           add-to-path: false
 
-      - name: Install build tools
+      - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build python3 python3-pip zip
+          sudo apt-get install -y cmake ninja-build python3 python3-pip
           python3 -m pip install --upgrade pip
 
-      - name: Apply minimal CMake patch
+      - name: Apply Minimal Configuration
         run: |
           cd boringssl
-          cp CMakeLists.txt CMakeLists.txt.bak
-          sed -i '/d1_.*\.cc/d' CMakeLists.txt
+
+          # 1. Patch system certificate path
+          X509_DEF_FILE=$(find . -type f -name x509_def.cc | head -n 1)
+          if [ -n "$X509_DEF_FILE" ]; then
+            sed -i 's|return X509_CERT_DIR;|return "/system/etc/security/cacerts";|' "$X509_DEF_FILE"
+          fi
+
+          # 2. Backup and strip out DTLS and test/tool sources
+          cp CMakeLists.txt CMakeLists.txt.orig
+          sed -i '/d1_both\.cc/d' CMakeLists.txt
+          sed -i '/d1_lib\.cc/d' CMakeLists.txt
+          sed -i '/d1_pkt\.cc/d' CMakeLists.txt
+          sed -i '/d1_srtp\.cc/d' CMakeLists.txt
           sed -i '/_test\.cc/d' CMakeLists.txt
           sed -i '/test_.*\.cc/d' CMakeLists.txt
-          cat << 'EOF' >> CMakeLists.txt
-# === MINIMAL BUILD CONFIGURATION ===
-option(BUILD_TESTING "Build tests" OFF)
-option(BUILD_TOOLS "Build tools" OFF)
-add_definitions(-DOPENSSL_SMALL_CODE)
-add_definitions(-DOPENSSL_NO_LEGACY_ALGORITHMS)
-add_definitions(-DOPENSSL_NO_WEAK_SSL_CIPHERS)
-add_definitions(-DOPENSSL_NO_DTLS)
-add_definitions(-DOPENSSL_NO_PSK)
-EOF
 
-      - name: Set environment variables
+          # 3. Inject minimal-build options immediately after project declaration
+          sed -i '/^project(BoringSSL/a\
+# === Minimal Build Configuration ===\
+option(BUILD_TESTING "Build tests" OFF)\
+option(BUILD_TOOLS "Build tools" OFF)\
+set(BUILD_TESTING OFF CACHE BOOL "" FORCE)\
+set(BUILD_TOOLS OFF CACHE BOOL "" FORCE)\
+add_definitions(-DOPENSSL_SMALL_CODE)\
+add_definitions(-DOPENSSL_NO_LEGACY_ALGORITHMS)\
+add_definitions(-DOPENSSL_NO_WEAK_SSL_CIPHERS)\
+add_definitions(-DOPENSSL_NO_DTLS)\
+add_definitions(-DOPENSSL_NO_PSK)\
+' CMakeLists.txt
+
+          # 4. Early return once ssl target is configured
+          SSL_LINE=$(grep -n "target_include_directories(ssl PUBLIC" CMakeLists.txt | tail -1 | cut -d: -f1)
+          if [ -n "$SSL_LINE" ]; then
+            sed -i "${SSL_LINE}a\
+if(NOT BUILD_TESTING AND NOT BUILD_TOOLS)\
+  message(STATUS \"Minimal build complete — crypto & ssl only\")\
+  return()\
+endif()\
+" CMakeLists.txt
+          fi
+
+          # 5. Stub out test subdirs
+          printf "# Tests disabled for minimal build\nreturn()\n" > ssl/test/CMakeLists.txt
+          printf "# Tests disabled for minimal build\nreturn()\n" > crypto/test/CMakeLists.txt
+
+      - name: Set Build Variables
         run: |
-          echo "NDK_PATH=${{ steps.ndk.outputs.ndk-path }}" >> $GITHUB_ENV
+          NDK_PATH="${{ steps.setup-ndk.outputs.ndk-path }}"
+          echo "NDK_ROOT=$NDK_PATH" >> $GITHUB_ENV
           case "${{ matrix.arch }}" in
             armeabi-v7a)
-              ABI=armeabi-v7a; FLAGS="-mfpu=neon";;
+              echo "ANDROID_ABI=armeabi-v7a" >> $GITHUB_ENV
+              echo "ANDROID_PLATFORM=android-21" >> $GITHUB_ENV
+              ARCH_FLAGS="-mfpu=neon"
+              ;;
             arm64-v8a)
-              ABI=arm64-v8a; FLAGS="-march=armv8-a+crypto";;
+              echo "ANDROID_ABI=arm64-v8a" >> $GITHUB_ENV
+              echo "ANDROID_PLATFORM=android-21" >> $GITHUB_ENV
+              ARCH_FLAGS="-march=armv8-a+crypto"
+              ;;
             x86)
-              ABI=x86; FLAGS="-msse4.2 -maes";;
+              echo "ANDROID_ABI=x86" >> $GITHUB_ENV
+              echo "ANDROID_PLATFORM=android-21" >> $GITHUB_ENV
+              ARCH_FLAGS="-msse4.2 -maes"
+              ;;
             x86_64)
-              ABI=x86_64; FLAGS="-msse4.2 -maes -mavx";;
+              echo "ANDROID_ABI=x86_64" >> $GITHUB_ENV
+              echo "ANDROID_PLATFORM=android-21" >> $GITHUB_ENV
+              ARCH_FLAGS="-msse4.2 -maes -mavx"
+              ;;
           esac
-          echo "ANDROID_ABI=$ABI" >> $GITHUB_ENV
-          echo "ANDROID_PLATFORM=android-21" >> $GITHUB_ENV
-          echo "ARCH_FLAGS=$FLAGS" >> $GITHUB_ENV
-          echo "TOOLCHAIN=$NDK_PATH/build/cmake/android.toolchain.cmake" >> $GITHUB_ENV
+          echo "ARCH_FLAGS=$ARCH_FLAGS" >> $GITHUB_ENV
+          echo "CMAKE_TOOLCHAIN_FILE=$NDK_PATH/build/cmake/android.toolchain.cmake" >> $GITHUB_ENV
 
-      - name: Build shared libraries
+      - name: Build BoringSSL
         run: |
-          cd boringssl
-          mkdir -p build-${{ matrix.arch }}
-          cd build-${{ matrix.arch }}
-          COMMON="-Os -DNDEBUG -ffunction-sections -fdata-sections -fvisibility=hidden -fvisibility-inlines-hidden"
-          COMMON="$COMMON -DOPENSSL_SMALL_CODE -DOPENSSL_NO_LEGACY_ALGORITHMS -DOPENSSL_NO_WEAK_SSL_CIPHERS -DOPENSSL_NO_DTLS -DOPENSSL_NO_PSK"
-          COMMON="$COMMON -flto=thin -fwhole-program-vtables -g0 $ARCH_FLAGS"
-          [ "${{ matrix.arch }}" = "armeabi-v7a" ] && COMMON="$COMMON -DOPENSSL_ARM_NEON"
-          [ "${{ matrix.arch }}" = "arm64-v8a" ] && COMMON="$COMMON -DOPENSSL_AARCH64_CRYPTO"
-          cmake .. -G Ninja \
-            -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN" \
+          mkdir -p boringssl/build-${{ matrix.arch }}
+          cd boringssl/build-${{ matrix.arch }}
+          cmake .. \
+            -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$CMAKE_TOOLCHAIN_FILE" \
             -DANDROID_ABI="$ANDROID_ABI" \
             -DANDROID_PLATFORM="$ANDROID_PLATFORM" \
-            -DCMAKE_BUILD_TYPE=MinSizeRel \
-            -DBUILD_SHARED_LIBS=ON \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_FLAGS="-O2 -DNDEBUG -ffunction-sections -fdata-sections -fvisibility=hidden $ARCH_FLAGS" \
+            -DCMAKE_CXX_FLAGS="-O2 -DNDEBUG -ffunction-sections -fdata-sections -fvisibility=hidden $ARCH_FLAGS -fno-rtti -fno-exceptions" \
+            -DCMAKE_EXE_LINKER_FLAGS="-s -Wl,--gc-sections" \
+            -DCMAKE_SHARED_LINKER_FLAGS="-s -Wl,--gc-sections" \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
             -DBUILD_TESTING=OFF \
-            -DBUILD_TOOLS=OFF \
-            -DCMAKE_C_FLAGS="$COMMON" \
-            -DCMAKE_CXX_FLAGS="$COMMON -fno-rtti -fno-exceptions" \
-            -DCMAKE_SHARED_LINKER_FLAGS="-Wl,--gc-sections -Wl,--strip-all -flto=thin"
+            -DBUILD_TOOLS=OFF
           ninja crypto ssl
 
-      - name: Strip shared libraries
+      - name: Strip Libraries
         run: |
           cd boringssl/build-${{ matrix.arch }}
-          case "${{ matrix.arch }}" in
-            arm64-v8a) STRIP="$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android-strip";;
-            armeabi-v7a) STRIP="$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin/arm-linux-androideabi-strip";;
-            x86_64) STRIP="$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android-strip";;
-            x86) STRIP="$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin/i686-linux-android-strip";;
+          TOOLCHAIN_BIN="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          case "$ANDROID_ABI" in
+            arm64-v8a) STRIP="$TOOLCHAIN_BIN/aarch64-linux-android-strip" ;;
+            armeabi-v7a) STRIP="$TOOLCHAIN_BIN/arm-linux-androideabi-strip" ;;
+            x86_64) STRIP="$TOOLCHAIN_BIN/x86_64-linux-android-strip" ;;
+            x86) STRIP="$TOOLCHAIN_BIN/i686-linux-android-strip" ;;
           esac
-          $STRIP --strip-unneeded libcrypto.so libssl.so
+          if [ -x "$STRIP" ]; then
+            "$STRIP" --strip-all ssl/libssl.a crypto/libcrypto.a
+          else
+            strip --strip-all ssl/libssl.a crypto/libcrypto.a
+          fi
 
-      - name: Package drop-in ZIP
-        run: |
-          cd boringssl
-          mkdir -p dropin/jni/${{ matrix.arch }} dropin/include/openssl
-          cp build-${{ matrix.arch }}/libcrypto.so dropin/jni/${{ matrix.arch }}/
-          cp build-${{ matrix.arch }}/libssl.so    dropin/jni/${{ matrix.arch }}/
-          cp include/openssl/*.h dropin/include/openssl/
-          cd dropin
-          zip -r boringssl-dropin-${{ matrix.arch }}.zip jni include
-
-      - name: Upload drop-in artifact
+      - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: boringssl-dropin-${{ matrix.arch }}
-          path: boringssl/dropin/boringssl-dropin-${{ matrix.arch }}.zip
+          name: boringssl-min-${{ matrix.arch }}
+          path: |
+            boringssl/build-${{ matrix.arch }}/ssl/libssl.a
+            boringssl/build-${{ matrix.arch }}/crypto/libcrypto.a
