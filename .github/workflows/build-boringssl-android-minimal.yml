@@ -7,7 +7,7 @@
 # Key Features:
 # - Uses a matrix strategy to build for armeabi-v7a, arm64-v8a, x86, and x86_64.
 # - Installs the Android NDK automatically.
-# - Uses CMake with 'MinSizeRel' to create the smallest possible binaries.
+# - Uses CMake with '-O2' optimization.
 # - Disables tests and fuzzers to reduce library size.
 # - Includes a step to verify that libcrypto_static.a is under 4MB.
 # - Uploads the static libraries for each architecture as separate artifacts.
@@ -16,6 +16,9 @@ name: Build BoringSSL for Android
 
 on:
   workflow_dispatch: # Allows manual triggering of the workflow
+  push:
+    branches:
+      - main # Triggers on push to the main branch
 
 jobs:
   build_boringssl:
@@ -37,7 +40,7 @@ jobs:
       - name: Install Android NDK
         uses: nesis/setup-ndk@v1
         with:
-          ndk-version: r25c # A recent, stable NDK version
+          ndk-version: r28b # Updated NDK version
 
       - name: Checkout BoringSSL
         uses: actions/checkout@v4
@@ -56,14 +59,15 @@ jobs:
         # -DANDROID_ABI: Specifies the target architecture from the matrix.
         # -DCMAKE_TOOLCHAIN_FILE: Points to the NDK's standard toolchain file.
         # -DANDROID_PLATFORM: Sets the minimum Android API level. '21' is a common choice.
-        # -DCMAKE_BUILD_TYPE=MinSizeRel: Crucial for optimizing for the smallest binary size.
+        # -DCMAKE_C_FLAGS / -DCMAKE_CXX_FLAGS: Sets the C and C++ compiler flags for -O2 optimization.
         # -DBORINGSSL_BUILD_TESTS=OFF: Skips building tests to reduce size and build time.
         run: |
           cmake -B build -GNinja \
             -DANDROID_ABI=${{ matrix.arch }} \
             -DCMAKE_TOOLCHAIN_FILE=${{ env.ANDROID_NDK_HOME }}/build/cmake/android.toolchain.cmake \
             -DANDROID_PLATFORM=android-21 \
-            -DCMAKE_BUILD_TYPE=MinSizeRel \
+            -DCMAKE_C_FLAGS="-O2" \
+            -DCMAKE_CXX_FLAGS="-O2" \
             -DBORINGSSL_BUILD_TESTS=OFF
           ninja -C build crypto ssl
 
