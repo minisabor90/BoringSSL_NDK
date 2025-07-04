@@ -40,11 +40,24 @@ jobs:
     - name: Install build dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y cmake ninja-build
+        sudo apt-get install -y cmake ninja-build bc
     
-    - name: Generate Android build files
+    - name: Setup Go (required for BoringSSL build)
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.21'
+    
+    - name: Generate build files
       run: |
+        # First run the general generator
+        python3 util/generate_build_files.py
+        
+        # Then run for Android specifically
         python3 util/generate_build_files.py android
+        
+        # Verify files were generated
+        ls -la src/gen/ || echo "src/gen directory not found, continuing..."
+        ls -la . | grep -E "\.(mk|bp)$" || echo "No .mk or .bp files found, continuing..."
     
     - name: Create build directories
       run: |
@@ -63,10 +76,10 @@ jobs:
           -DANDROID_NATIVE_API_LEVEL=21 \
           -DANDROID_ARM_NEON=ON \
           -DCMAKE_BUILD_TYPE=Release \
-          -DCMAKE_C_FLAGS="-O2 -DNDEBUG -ffunction-sections -fdata-sections -fvisibility=hidden" \
-          -DCMAKE_CXX_FLAGS="-O2 -DNDEBUG -ffunction-sections -fdata-sections -fvisibility=hidden" \
-          -DCMAKE_EXE_LINKER_FLAGS="-Wl,--gc-sections -Wl,--strip-all" \
-          -DCMAKE_SHARED_LINKER_FLAGS="-Wl,--gc-sections -Wl,--strip-all" \
+          -DCMAKE_C_FLAGS="-O2 -DNDEBUG -ffunction-sections -fdata-sections -fvisibility=hidden -flto" \
+          -DCMAKE_CXX_FLAGS="-O2 -DNDEBUG -ffunction-sections -fdata-sections -fvisibility=hidden -flto" \
+          -DCMAKE_EXE_LINKER_FLAGS="-Wl,--gc-sections -Wl,--strip-all -flto" \
+          -DCMAKE_SHARED_LINKER_FLAGS="-Wl,--gc-sections -Wl,--strip-all -flto" \
           -DCMAKE_STATIC_LINKER_FLAGS="-Wl,--gc-sections" \
           -DBUILD_SHARED_LIBS=OFF \
           -DOPENSSL_NO_ASM=OFF \
@@ -82,10 +95,10 @@ jobs:
           -DANDROID_ABI=arm64-v8a \
           -DANDROID_NATIVE_API_LEVEL=21 \
           -DCMAKE_BUILD_TYPE=Release \
-          -DCMAKE_C_FLAGS="-O2 -DNDEBUG -ffunction-sections -fdata-sections -fvisibility=hidden" \
-          -DCMAKE_CXX_FLAGS="-O2 -DNDEBUG -ffunction-sections -fdata-sections -fvisibility=hidden" \
-          -DCMAKE_EXE_LINKER_FLAGS="-Wl,--gc-sections -Wl,--strip-all" \
-          -DCMAKE_SHARED_LINKER_FLAGS="-Wl,--gc-sections -Wl,--strip-all" \
+          -DCMAKE_C_FLAGS="-O2 -DNDEBUG -ffunction-sections -fdata-sections -fvisibility=hidden -flto" \
+          -DCMAKE_CXX_FLAGS="-O2 -DNDEBUG -ffunction-sections -fdata-sections -fvisibility=hidden -flto" \
+          -DCMAKE_EXE_LINKER_FLAGS="-Wl,--gc-sections -Wl,--strip-all -flto" \
+          -DCMAKE_SHARED_LINKER_FLAGS="-Wl,--gc-sections -Wl,--strip-all -flto" \
           -DCMAKE_STATIC_LINKER_FLAGS="-Wl,--gc-sections" \
           -DBUILD_SHARED_LIBS=OFF \
           -DOPENSSL_NO_ASM=OFF \
@@ -101,10 +114,10 @@ jobs:
           -DANDROID_ABI=x86 \
           -DANDROID_NATIVE_API_LEVEL=21 \
           -DCMAKE_BUILD_TYPE=Release \
-          -DCMAKE_C_FLAGS="-O2 -DNDEBUG -ffunction-sections -fdata-sections -fvisibility=hidden" \
-          -DCMAKE_CXX_FLAGS="-O2 -DNDEBUG -ffunction-sections -fdata-sections -fvisibility=hidden" \
-          -DCMAKE_EXE_LINKER_FLAGS="-Wl,--gc-sections -Wl,--strip-all" \
-          -DCMAKE_SHARED_LINKER_FLAGS="-Wl,--gc-sections -Wl,--strip-all" \
+          -DCMAKE_C_FLAGS="-O2 -DNDEBUG -ffunction-sections -fdata-sections -fvisibility=hidden -flto" \
+          -DCMAKE_CXX_FLAGS="-O2 -DNDEBUG -ffunction-sections -fdata-sections -fvisibility=hidden -flto" \
+          -DCMAKE_EXE_LINKER_FLAGS="-Wl,--gc-sections -Wl,--strip-all -flto" \
+          -DCMAKE_SHARED_LINKER_FLAGS="-Wl,--gc-sections -Wl,--strip-all -flto" \
           -DCMAKE_STATIC_LINKER_FLAGS="-Wl,--gc-sections" \
           -DBUILD_SHARED_LIBS=OFF \
           -DOPENSSL_NO_ASM=OFF \
@@ -120,10 +133,10 @@ jobs:
           -DANDROID_ABI=x86_64 \
           -DANDROID_NATIVE_API_LEVEL=21 \
           -DCMAKE_BUILD_TYPE=Release \
-          -DCMAKE_C_FLAGS="-O2 -DNDEBUG -ffunction-sections -fdata-sections -fvisibility=hidden" \
-          -DCMAKE_CXX_FLAGS="-O2 -DNDEBUG -ffunction-sections -fdata-sections -fvisibility=hidden" \
-          -DCMAKE_EXE_LINKER_FLAGS="-Wl,--gc-sections -Wl,--strip-all" \
-          -DCMAKE_SHARED_LINKER_FLAGS="-Wl,--gc-sections -Wl,--strip-all" \
+          -DCMAKE_C_FLAGS="-O2 -DNDEBUG -ffunction-sections -fdata-sections -fvisibility=hidden -flto" \
+          -DCMAKE_CXX_FLAGS="-O2 -DNDEBUG -ffunction-sections -fdata-sections -fvisibility=hidden -flto" \
+          -DCMAKE_EXE_LINKER_FLAGS="-Wl,--gc-sections -Wl,--strip-all -flto" \
+          -DCMAKE_SHARED_LINKER_FLAGS="-Wl,--gc-sections -Wl,--strip-all -flto" \
           -DCMAKE_STATIC_LINKER_FLAGS="-Wl,--gc-sections" \
           -DBUILD_SHARED_LIBS=OFF \
           -DOPENSSL_NO_ASM=OFF \
@@ -137,11 +150,45 @@ jobs:
         for lib in *.a; do
           echo "Original size of $lib:"
           ls -lh $lib
-          $NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip $lib
-          echo "Stripped size of $lib:"
+          
+          # Find appropriate strip tool for each architecture
+          case $lib in
+            *armeabi-v7a*)
+              STRIP_TOOL="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
+              ;;
+            *arm64-v8a*)
+              STRIP_TOOL="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
+              ;;
+            *x86_64*)
+              STRIP_TOOL="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
+              ;;
+            *x86*)
+              STRIP_TOOL="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
+              ;;
+            *)
+              STRIP_TOOL="strip"
+              ;;
+          esac
+          
+          if [ -f "$STRIP_TOOL" ]; then
+            $STRIP_TOOL $lib
+          else
+            echo "Strip tool not found, using system strip"
+            strip $lib 2>/dev/null || echo "Strip failed, continuing..."
+          fi
+          
+          echo "Final size of $lib:"
           ls -lh $lib
-          echo "Size in bytes: $(stat -c%s $lib)"
-          echo "Size in MB: $(echo "scale=2; $(stat -c%s $lib)/1024/1024" | bc)"
+          size_bytes=$(stat -c%s $lib)
+          size_mb=$(echo "scale=2; $size_bytes/1024/1024" | bc -l)
+          echo "Size: ${size_mb}MB (${size_bytes} bytes)"
+          
+          # Check if under 4MB
+          if (( $(echo "$size_mb < 4.0" | bc -l) )); then
+            echo "✅ $lib is under 4MB"
+          else
+            echo "⚠️  $lib is over 4MB"
+          fi
           echo "---"
         done
     
@@ -154,25 +201,60 @@ jobs:
       run: |
         cd output
         mkdir -p boringssl-android/{lib/{armeabi-v7a,arm64-v8a,x86,x86_64},include}
+        
+        # Copy libraries
         cp libcrypto_armeabi-v7a.a boringssl-android/lib/armeabi-v7a/libcrypto.a
         cp libcrypto_arm64-v8a.a boringssl-android/lib/arm64-v8a/libcrypto.a
         cp libcrypto_x86.a boringssl-android/lib/x86/libcrypto.a
         cp libcrypto_x86_64.a boringssl-android/lib/x86_64/libcrypto.a
+        
+        # Copy headers
         cp -r include/* boringssl-android/include/
         
-        # Create a simple CMakeLists.txt for easy integration
+        # Create CMakeLists.txt for easy integration
         cat > boringssl-android/CMakeLists.txt << 'EOF'
         cmake_minimum_required(VERSION 3.10)
         project(BoringSSL)
         
+        # BoringSSL crypto library
         add_library(crypto STATIC IMPORTED)
         set_target_properties(crypto PROPERTIES
             IMPORTED_LOCATION ${CMAKE_CURRENT_SOURCE_DIR}/lib/${ANDROID_ABI}/libcrypto.a
             INTERFACE_INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/include
         )
+        
+        # For compatibility, also create boringssl_crypto target
+        add_library(boringssl_crypto ALIAS crypto)
         EOF
         
+        # Create README
+        cat > boringssl-android/README.md << 'EOF'
+        # BoringSSL Android Build
+        
+        This package contains BoringSSL static libraries built for Android.
+        
+        ## Architectures
+        - armeabi-v7a
+        - arm64-v8a  
+        - x86
+        - x86_64
+        
+        ## Usage in CMake
+        ```cmake
+        add_subdirectory(path/to/boringssl-android)
+        target_link_libraries(your_target crypto)
+        ```
+        
+        ## Manual Usage
+        Include path: `include/`
+        Libraries: `lib/${ANDROID_ABI}/libcrypto.a`
+        EOF
+        
+        # Create the archive
         tar -czf boringssl-android.tar.gz boringssl-android/
+        
+        echo "Archive created: boringssl-android.tar.gz"
+        ls -lh boringssl-android.tar.gz
     
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
@@ -188,12 +270,25 @@ jobs:
         echo "=== BoringSSL Android Build Summary ==="
         echo "Reference: ${{ inputs.boringssl_ref || '0.20250701.0' }}"
         echo "NDK Version: r28b"
-        echo "Optimization: -O2"
+        echo "Optimization: -O2 with LTO"
+        echo "Build Date: $(date)"
         echo ""
-        echo "Library sizes:"
+        echo "📦 Library sizes:"
         cd output
+        total_size=0
         for lib in libcrypto_*.a; do
-          size_bytes=$(stat -c%s $lib)
-          size_mb=$(echo "scale=2; $size_bytes/1024/1024" | bc)
-          echo "$lib: ${size_mb}MB (${size_bytes} bytes)"
+          if [ -f "$lib" ]; then
+            size_bytes=$(stat -c%s $lib)
+            size_mb=$(echo "scale=2; $size_bytes/1024/1024" | bc -l)
+            total_size=$(echo "$total_size + $size_bytes" | bc -l)
+            arch=$(echo $lib | sed 's/libcrypto_\(.*\)\.a/\1/')
+            printf "%-15s: %6.2fMB (%d bytes)\n" "$arch" "$size_mb" "$size_bytes"
+          fi
         done
+        
+        total_mb=$(echo "scale=2; $total_size/1024/1024" | bc -l)
+        echo ""
+        echo "📊 Total size: ${total_mb}MB"
+        echo ""
+        echo "✅ Build completed successfully!"
+        echo "📁 Download the 'boringssl-android-${{ inputs.boringssl_ref || '0.20250701.0' }}' artifact"
