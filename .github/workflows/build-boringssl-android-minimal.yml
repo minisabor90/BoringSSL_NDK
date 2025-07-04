@@ -43,7 +43,7 @@ jobs:
         sudo apt-get install -y cmake ninja-build python3 python3-pip
         python3 -m pip install --upgrade pip
         
-    - name: Apply minimal configuration and regenerate build files
+    - name: Apply minimal configuration directly to CMakeLists.txt
       run: |
         cd boringssl
         
@@ -56,152 +56,51 @@ jobs:
           sed -i 's|return X509_CERT_DIR;|return "/system/etc/security/cacerts";|g' "$X509_DEF_FILE"
         fi
         
-        # 2. Create minimal configuration for build generation
-        cat > util/minimal_config.py << 'CONFIGEOF'
-        #!/usr/bin/env python3
+        # 2. Create a comprehensive patch to remove DTLS and minimize build
+        echo "=== Patching CMakeLists.txt to exclude DTLS and tests ==="
         
-        # Minimal BoringSSL configuration for Android HTTP/3
-        # This script modifies the build configuration before generation
-        
-        import os
-        import sys
-        
-        def apply_minimal_config():
-            print("=== Applying Minimal Configuration ===")
-            
-            # Read the current build configuration
-            build_config_path = "util/generate_build_files.py"
-            
-            if not os.path.exists(build_config_path):
-                print("❌ Build config not found")
-                return False
-                
-            # Create a minimal sources configuration
-            minimal_excludes = [
-                # DTLS support (we don't need it for HTTP/3)
-                "ssl/d1_",
-                "ssl/dtls",
-                # Legacy algorithms
-                "crypto/des/",
-                "crypto/rc4/",
-                "crypto/md4/",
-                "crypto/md5/",
-                "crypto/rc2/",
-                "crypto/bf/",
-                "crypto/cast/",
-                # Weak/legacy ciphers
-                "crypto/cipher_extra/e_",
-                # PSK and SRP (not needed for HTTP/3)
-                "ssl/psk",
-                "ssl/srp",
-                # Test files
-                "_test.cc",
-                "_test.c",
-                "test_",
-                "/test/",
-                # Tools
-                "tool/",
-                "util/fipstools/",
-            ]
-            
-            print("✅ Minimal configuration applied")
-            return True
-        
-        if __name__ == "__main__":
-            apply_minimal_config()
-        CONFIGEOF
-        
-        # Make it executable
-        chmod +x util/minimal_config.py
-        
-        # 3. Apply minimal config
-        python3 util/minimal_config.py
-        
-        # 4. Create a custom build configuration that excludes DTLS
         # Backup original
-        cp util/generate_build_files.py util/generate_build_files.py.backup
+        cp CMakeLists.txt CMakeLists.txt.backup
         
-        # Patch the build file generator to exclude DTLS
-        cat > build_minimal_patch.py << 'PATCHEOF'
-        #!/usr/bin/env python3
+        # Remove DTLS-related source files from CMakeLists.txt
+        sed -i '/d1_both\.cc/d' CMakeLists.txt
+        sed -i '/d1_lib\.cc/d' CMakeLists.txt
+        sed -i '/d1_pkt\.cc/d' CMakeLists.txt
+        sed -i '/d1_srtp\.cc/d' CMakeLists.txt
         
-        import re
-        import sys
+        # Remove test files
+        sed -i '/_test\.cc/d' CMakeLists.txt
+        sed -i '/test_.*\.cc/d' CMakeLists.txt
         
-        def patch_build_generator():
-            with open('util/generate_build_files.py', 'r') as f:
-                content = f.read()
-            
-            # Find SSL sources section and remove DTLS files
-            dtls_patterns = [
-                r'.*d1_both\.cc.*\n',
-                r'.*d1_lib\.cc.*\n', 
-                r'.*d1_pkt\.cc.*\n',
-                r'.*d1_srtp\.cc.*\n',
-                r'.*dtls.*\.cc.*\n',
-            ]
-            
-            for pattern in dtls_patterns:
-                content = re.sub(pattern, '', content, flags=re.MULTILINE)
-            
-            # Also remove test files
-            test_patterns = [
-                r'.*_test\.cc.*\n',
-                r'.*test_.*\.cc.*\n',
-            ]
-            
-            for pattern in test_patterns:
-                content = re.sub(pattern, '', content, flags=re.MULTILINE)
-            
-            with open('util/generate_build_files.py', 'w') as f:
-                f.write(content)
-            
-            print("✅ Build generator patched to exclude DTLS and tests")
+        # Add minimal configuration after project declaration
+        sed -i '/^project(BoringSSL/a\\n# === MINIMAL BUILD CONFIGURATION ===\n# Disable all tests and tools\noption(BUILD_TESTING "Build tests" OFF)\noption(BUILD_TOOLS "Build tools" OFF)\nset(BUILD_TESTING OFF CACHE BOOL "Build tests" FORCE)\nset(BUILD_TOOLS OFF CACHE BOOL "Build tools" FORCE)\n\n# Minimal feature definitions\nadd_definitions(-DOPENSSL_SMALL_CODE)\nadd_definitions(-DOPENSSL_NO_LEGACY_ALGORITHMS)\nadd_definitions(-DOPENSSL_NO_WEAK_SSL_CIPHERS)\nadd_definitions(-DOPENSSL_NO_DTLS)\nadd_definitions(-DOPENSSL_NO_PSK)\nadd_definitions(-DOPENSSL_NO_SRP)\n' CMakeLists.txt
         
-        if __name__ == "__main__":
-            patch_build_generator()
-        PATCHEOF
-        
-        python3 build_minimal_patch.py
-        
-        # 5. Regenerate build files with Android target
-        echo "=== Regenerating Build Files for Android ==="
-        cd util
-        python3 generate_build_files.py android
-        cd ..
-        
-        # 6. Now patch the generated CMakeLists.txt to be truly minimal
-        echo "=== Patching Generated CMakeLists.txt ==="
-        
-        # Find where SSL library ends and add early return
-        if grep -q "target_include_directories(ssl PUBLIC" CMakeLists.txt; then
-          # Create a new CMakeLists.txt that stops after SSL library
-          awk '
-            /target_include_directories\(ssl PUBLIC/ {
-              print $0
-              print ""
-              print "# Minimal build: skip tests and tools"
-              print "message(STATUS \"Minimal build complete - crypto and ssl libraries only\")"
-              print "return()"
-              exit
-            }
-            { print }
-          ' CMakeLists.txt > CMakeLists_minimal.txt
+        # Find the end of SSL library definition and add early return
+        if grep -n "target_include_directories(ssl PUBLIC" CMakeLists.txt; then
+          # Get line number where SSL library ends
+          SSL_END_LINE=$(grep -n "target_include_directories(ssl PUBLIC" CMakeLists.txt | tail -1 | cut -d: -f1)
           
-          mv CMakeLists_minimal.txt CMakeLists.txt
-          echo "✅ CMakeLists.txt patched for minimal build"
+          # Add early return after SSL library
+          sed -i "${SSL_END_LINE}a\\n# === MINIMAL BUILD: STOP HERE ===\n# Skip all tests, tools, and examples\nif(NOT BUILD_TESTING AND NOT BUILD_TOOLS)\n  message(STATUS \"Minimal build complete - crypto and ssl libraries only\")\n  return()\nendif()\n" CMakeLists.txt
+          
+          echo "✅ Added early return after SSL library at line $SSL_END_LINE"
         else
-          echo "⚠️ Could not find SSL library definition, using fallback"
-          # Fallback: add early return after project definition
-          sed -i '/^project(BoringSSL/a\\n# Minimal build configuration\noption(BUILD_TESTING "Build tests" OFF)\noption(BUILD_TOOLS "Build tools" OFF)\nset(BUILD_TESTING OFF CACHE BOOL "Build tests" FORCE)\nset(BUILD_TOOLS OFF CACHE BOOL "Build tools" FORCE)' CMakeLists.txt
+          echo "⚠️ Could not find SSL library definition"
         fi
         
-        # 7. Disable ssl/test subdirectory completely
+        # 3. Also create a minimal ssl/test/CMakeLists.txt to prevent issues
         if [ -f "ssl/test/CMakeLists.txt" ]; then
           echo "# Tests disabled for minimal build" > ssl/test/CMakeLists.txt
+          echo "return()" >> ssl/test/CMakeLists.txt
         fi
         
-        echo "✅ Minimal configuration complete"
+        # 4. Create minimal crypto/test/CMakeLists.txt
+        if [ -f "crypto/test/CMakeLists.txt" ]; then
+          echo "# Tests disabled for minimal build" > crypto/test/CMakeLists.txt
+          echo "return()" >> crypto/test/CMakeLists.txt
+        fi
+        
+        echo "✅ Minimal configuration applied directly to CMakeLists.txt"
         
     - name: Configure build variables
       run: |
@@ -251,13 +150,29 @@ jobs:
         echo "CMakeLists.txt size: $(wc -l CMakeLists.txt)"
         echo ""
         echo "Checking for DTLS references:"
-        grep -n "d1_" CMakeLists.txt || echo "✅ No DTLS files found"
+        if grep -n "d1_" CMakeLists.txt; then
+          echo "❌ DTLS files still found!"
+          exit 1
+        else
+          echo "✅ No DTLS files found"
+        fi
         echo ""
         echo "Checking for test references:"
-        grep -n "_test\|test_" CMakeLists.txt | head -3 || echo "✅ No test files found"
+        if grep -n "_test\|test_" CMakeLists.txt | head -3; then
+          echo "⚠️ Some test references found"
+        else
+          echo "✅ No test files found"
+        fi
         echo ""
-        echo "Last 10 lines of CMakeLists.txt:"
-        tail -10 CMakeLists.txt
+        echo "Checking for early return:"
+        if grep -n "return()" CMakeLists.txt; then
+          echo "✅ Early return found"
+        else
+          echo "⚠️ No early return found"
+        fi
+        echo ""
+        echo "Last 15 lines of CMakeLists.txt:"
+        tail -15 CMakeLists.txt
         
     - name: Configure CMake (Minimal & Optimized)
       run: |
@@ -308,7 +223,7 @@ jobs:
           -DBUILD_TESTING=OFF \
           -DBUILD_TOOLS=OFF
           
-    - name: List available targets
+    - name: List available targets and verify no DTLS
       run: |
         cd boringssl/build-${{ matrix.arch }}
         echo "=== Available Build Targets ==="
@@ -316,6 +231,20 @@ jobs:
         echo ""
         echo "Total targets:"
         ninja -t targets | wc -l
+        echo ""
+        echo "Checking for DTLS targets:"
+        if ninja -t targets | grep -i dtls; then
+          echo "❌ DTLS targets found!"
+        else
+          echo "✅ No DTLS targets found"
+        fi
+        echo ""
+        echo "Checking for test targets:"
+        if ninja -t targets | grep -i test | head -3; then
+          echo "⚠️ Some test targets found"
+        else
+          echo "✅ No test targets found"
+        fi
         
     - name: Build BoringSSL (Minimal)
       run: |
@@ -413,7 +342,7 @@ jobs:
         TOTAL_SIZE=$(stat -c%s "$SSL_LIB_PATH" "$CRYPTO_LIB_PATH" | awk '{sum+=$1} END {print sum}')
         echo "Total library size: $(echo $TOTAL_SIZE | awk '{print $1/1024/1024 " MB"}')"
         
-    - name: Verify cipher support
+    - name: Verify cipher support and no DTLS
       run: |
         cd boringssl/build-${{ matrix.arch }}
         
@@ -443,11 +372,24 @@ jobs:
           echo "❌ X25519 key exchange missing"
         fi
         
-        # Verify DTLS is NOT included
+        # Verify DTLS is NOT included (this is the key check!)
+        echo ""
+        echo "=== CRITICAL: Verifying DTLS Exclusion ==="
         if nm "$SSL_LIB_PATH" 2>/dev/null | grep -i dtls >/dev/null; then
-          echo "⚠️ DTLS symbols found (should be excluded)"
+          echo "❌ DTLS symbols found (build failed to exclude DTLS)"
+          echo "DTLS symbols found:"
+          nm "$SSL_LIB_PATH" 2>/dev/null | grep -i dtls | head -5
         else
-          echo "✅ DTLS properly excluded"
+          echo "✅ DTLS properly excluded - no DTLS symbols found"
+        fi
+        
+        # Check for d1_ functions (DTLS-specific)
+        if nm "$SSL_LIB_PATH" 2>/dev/null | grep " d1_" >/dev/null; then
+          echo "❌ DTLS d1_ functions found (DTLS not properly excluded)"
+          echo "d1_ functions found:"
+          nm "$SSL_LIB_PATH" 2>/dev/null | grep " d1_" | head -5
+        else
+          echo "✅ No DTLS d1_ functions found"
         fi
         
         echo "Library analysis complete"
@@ -493,7 +435,7 @@ jobs:
         // Optimized for: curl, nghttp2, ngtcp2, nghttp3
         
         // Supported TLS versions: 1.2, 1.3 only
-        // DTLS support: DISABLED (not needed for HTTP/3)
+        // DTLS support: COMPLETELY DISABLED
         
         // Supported ciphers (hardware accelerated):
         //   - TLS_AES_128_GCM_SHA256 (AES-NI/ARM Crypto)
@@ -506,6 +448,7 @@ jobs:
         #define BORINGSSL_MINIMAL_BUILD 1
         #define BORINGSSL_ANDROID_BUILD 1
         #define BORINGSSL_NO_DTLS 1
+        #define BORINGSSL_HTTP3_OPTIMIZED 1
         
         #endif
         HEADEREOF
@@ -564,12 +507,12 @@ jobs:
         cat > boringssl-minimal-android/README.md << 'READMEEOF'
         # BoringSSL Ultra-Minimal Android Build 🚀
         
-        **Smallest possible BoringSSL optimized for Android HTTP/3 clients**
+        **Smallest possible BoringSSL with DTLS completely removed**
         
         ## 📊 Build Stats
         - **Size**: ~2-3MB total (vs 35MB+ standard build)
-        - **Performance**: Hardware-accelerated ciphers on ARM/x86
-        - **Focus**: HTTP/3, TLS 1.2/1.3 only, NO DTLS
+        - **Performance**: Hardware-accelerated ciphers
+        - **Focus**: HTTP/3 only, NO DTLS whatsoever
         
         ## 🎯 Perfect For
         - **curl** with HTTP/3 support
@@ -591,31 +534,33 @@ jobs:
         ✅ ECDHE-ECDSA-CHACHA20-POLY1305
         ```
         
-        ## ❌ Excluded Features (Size Optimization)
-        - ❌ DTLS (not needed for HTTP/3)
+        ## ❌ Completely Excluded (Size Optimization)
+        - ❌ **DTLS** (all d1_*.cc files removed)
         - ❌ Legacy ciphers (DES, RC4, MD5, etc.)
         - ❌ PSK and SRP
         - ❌ All test code and tools
+        - ❌ Debug symbols
         
         **Perfect for production HTTP/3 clients!** 🎯
         READMEEOF
         
         # Create build info with actual sizes
         cat > boringssl-minimal-android/BUILD_INFO.txt << BUILDEOF
-        BoringSSL Ultra-Minimal Android Build
-        =====================================
+        BoringSSL Ultra-Minimal Android Build (NO DTLS)
+        ================================================
         
         Build Date: $(date)
-        BoringSSL Release: 0.20250701.0 (ultra-minimal)
+        BoringSSL Release: 0.20250701.0 (ultra-minimal, NO DTLS)
         NDK Version: r28b
         Optimization: -Os + LTO + aggressive strip
-        Focus: HTTP/3, minimal size, NO DTLS
+        Focus: HTTP/3 only, DTLS completely removed
         
-        Features EXCLUDED for size:
-        - DTLS support
+        Features COMPLETELY EXCLUDED for size:
+        - DTLS support (all d1_*.cc files)
         - Legacy algorithms
         - Test code and tools
         - Debug symbols
+        - PSK/SRP support
         
         Architecture Sizes:
         BUILDEOF
@@ -644,14 +589,14 @@ jobs:
     - name: Create Ultra-Minimal Release
       uses: softprops/action-gh-release@v1
       with:
-        tag_name: boringssl-ultra-minimal-0.20250701.0-${{ github.run_number }}
-        name: BoringSSL Ultra-Minimal 0.20250701.0 (HTTP/3 Only) 🚀
+        tag_name: boringssl-no-dtls-0.20250701.0-${{ github.run_number }}
+        name: BoringSSL NO-DTLS 0.20250701.0 (HTTP/3 Pure) 🚀
         body: |
-          # BoringSSL Ultra-Minimal Android Build
+          # BoringSSL Ultra-Minimal Android Build (NO DTLS)
           
-          **Smallest possible BoringSSL optimized for HTTP/3 mobile clients**
+          **Smallest possible BoringSSL with DTLS completely removed**
           
-          ## 🎯 Perfect For
+          ## 🎯 Perfect For HTTP/3 Only
           - **curl** with HTTP/3 support
           - **nghttp2/nghttp3** integration  
           - **ngtcp2** QUIC transport
@@ -659,6 +604,12 @@ jobs:
           
           ## ⚡ Ultra-Minimal Features
           - **~2-3MB total** (vs 35MB+ standard)
-          - **NO DTLS** (HTTP/3 doesn't need it)
+          - **NO DTLS** - completely removed from source
           - **TLS 1.2/1.3** only
           - **Fast ciphers**: AES-GCM, ChaCha20-Poly1305
+          
+          ## 🏗️ Architectures
+          - ✅ **arm64-v8a** (AES crypto extensions)
+          - ✅ **armeabi-v7a** (NEON optimized)
+          - ✅ **x86_64** (AES-NI + AVX)
+          - ✅ **x86**
