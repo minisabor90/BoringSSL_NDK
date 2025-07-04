@@ -36,6 +36,7 @@ jobs:
       - name: Apply Minimal Configuration
         run: |
           cd boringssl
+
           # 1. Patch Android certificate path
           X509_DEF_FILE=$(find . -type f -name x509_def.cc | head -n1)
           if [ -n "$X509_DEF_FILE" ]; then
@@ -49,32 +50,31 @@ jobs:
           for file in d1_both.cc d1_lib.cc d1_pkt.cc d1_srtp.cc; do
             sed -i "/$file/d" CMakeLists.txt
           done
-          sed -i "/_test\.cc/d" CMakeLists.txt
-          sed -i "/test_.*\.cc/d" CMakeLists.txt
+          sed -i '/_test\.cc/d' CMakeLists.txt
+          sed -i '/test_.*\.cc/d' CMakeLists.txt
 
           # 4. Append minimal build configuration
-          cat << 'MINIMAL_CFG' >> CMakeLists.txt
-# === Minimal Build Configuration ===
-option(BUILD_TESTING "Build tests" OFF)
-option(BUILD_TOOLS "Build tools" OFF)
-set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
-set(BUILD_TOOLS OFF CACHE BOOL "" FORCE)
-add_definitions(-DOPENSSL_SMALL_CODE)
-add_definitions(-DOPENSSL_NO_LEGACY_ALGORITHMS)
-add_definitions(-DOPENSSL_NO_WEAK_SSL_CIPHERS)
-add_definitions(-DOPENSSL_NO_DTLS)
-add_definitions(-DOPENSSL_NO_PSK)
-if(NOT BUILD_TESTING AND NOT BUILD_TOOLS)
-  message(STATUS "Minimal build complete — crypto & ssl only")
-  return()
-endif()
-MINIMAL_CFG
+          echo '# === Minimal Build Configuration ===' >> CMakeLists.txt
+          echo 'option(BUILD_TESTING "Build tests" OFF)' >> CMakeLists.txt
+          echo 'option(BUILD_TOOLS "Build tools" OFF)' >> CMakeLists.txt
+          echo 'set(BUILD_TESTING OFF CACHE BOOL "" FORCE)' >> CMakeLists.txt
+          echo 'set(BUILD_TOOLS OFF CACHE BOOL "" FORCE)' >> CMakeLists.txt
+          echo 'add_definitions(-DOPENSSL_SMALL_CODE)' >> CMakeLists.txt
+          echo 'add_definitions(-DOPENSSL_NO_LEGACY_ALGORITHMS)' >> CMakeLists.txt
+          echo 'add_definitions(-DOPENSSL_NO_WEAK_SSL_CIPHERS)' >> CMakeLists.txt
+          echo 'add_definitions(-DOPENSSL_NO_DTLS)' >> CMakeLists.txt
+          echo 'add_definitions(-DOPENSSL_NO_PSK)' >> CMakeLists.txt
+          echo 'if(NOT BUILD_TESTING AND NOT BUILD_TOOLS)' >> CMakeLists.txt
+          echo '  message(STATUS "Minimal build complete — crypto & ssl only")' >> CMakeLists.txt
+          echo '  return()' >> CMakeLists.txt
+          echo 'endif()' >> CMakeLists.txt
 
           # 5. Stub out test subdirectories
-          echo "# Tests disabled for minimal build" > ssl/test/CMakeLists.txt
-          echo "return()" >> ssl/test/CMakeLists.txt
-          echo "# Tests disabled for minimal build" > crypto/test/CMakeLists.txt
-          echo "return()" >> crypto/test/CMakeLists.txt
+          echo '# Tests disabled for minimal build' > ssl/test/CMakeLists.txt
+          echo 'return()'                      >> ssl/test/CMakeLists.txt
+          echo '# Tests disabled for minimal build' > crypto/test/CMakeLists.txt
+          echo 'return()'                         >> crypto/test/CMakeLists.txt
+
 
       - name: Set Build Variables
         run: |
