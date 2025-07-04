@@ -37,79 +37,44 @@ jobs:
         ndk-version: r28b
         add-to-path: false
 
-    - name: Setup Python and dependencies
+    - name: Install build tools
       run: |
         sudo apt-get update
         sudo apt-get install -y cmake ninja-build python3 python3-pip
         python3 -m pip install --upgrade pip
 
-    - name: Apply minimal configuration directly to CMakeLists.txt
+    - name: Apply minimal CMake patch
       run: |
         cd boringssl
-
-        echo "=== Applying Minimal Build Configuration ==="
-
-        # 1. Patch Android certificate path first
-        X509_DEF_FILE=$(find . -name "x509_def.cc" -type f | head -1)
-        if [ -n "$X509_DEF_FILE" ]; then
-          echo "Patching certificate path in: $X509_DEF_FILE"
-          sed -i 's|return X509_CERT_DIR;|return "/system/etc/security/cacerts";|g' "$X509_DEF_FILE"
-        fi
-
-        # 2. Create a comprehensive patch to remove DTLS and minimize build
-        echo "=== Patching CMakeLists.txt to exclude DTLS and tests ==="
-
-        # Backup original
-        cp CMakeLists.txt CMakeLists.txt.backup
-
-        # Remove DTLS-related source files from CMakeLists.txt
+        # patch out DTLS, tests, fipsmodule
+        cp CMakeLists.txt CMakeLists.minimal.txt
+        sed -i '/add_subdirectory(crypto\/fipsmodule)/d' CMakeLists.txt
+        sed -i '/add_subdirectory(ssl\/test)/d' CMakeLists.txt
+        sed -i '/add_subdirectory(crypto\/test)/d' CMakeLists.txt
         sed -i '/d1_both\.cc/d' CMakeLists.txt
-        sed -i '/d1_lib\.cc/d' CMakeLists.txt
-        sed -i '/d1_pkt\.cc/d' CMakeLists.txt
-        sed -i '/d1_srtp\.cc/d' CMakeLists.txt
+        sed -i '/d1_lib\.cc/d'   CMakeLists.txt
+        sed -i '/d1_pkt\.cc/d'   CMakeLists.txt
+        sed -i '/d1_srtp\.cc/d'  CMakeLists.txt
+        sed -i '/_test\.cc/d'    CMakeLists.txt
+        sed -i '/test_.*\.cc/d'  CMakeLists.txt
+        # insert minimal options
+        sed -i '/^project(BoringSSL/a\\
+# minimal build config\n\
+option(BUILD_TESTING \"Build tests\" OFF)\n\
+option(BUILD_TOOLS   \"Build tools\" OFF)\n\
+set(BUILD_TESTING OFF CACHE BOOL \"Build tests\" FORCE)\n\
+set(BUILD_TOOLS OFF CACHE BOOL \"Build tools\" FORCE)\n\
+add_definitions(-DOPENSSL_SMALL_CODE)\n\
+add_definitions(-DOPENSSL_NO_LEGACY_ALGORITHMS)\n\
+add_definitions(-DOPENSSL_NO_WEAK_SSL_CIPHERS)\n\
+add_definitions(-DOPENSSL_NO_DTLS)\n\
+add_definitions(-DOPENSSL_NO_PSK)\n\
+add_definitions(-DOPENSSL_NO_SRP)\n' CMakeLists.txt
 
-        # Remove test files
-        sed -i '/_test\.cc/d' CMakeLists.txt
-        sed -i '/test_.*\.cc/d' CMakeLists.txt
-
-        # Add minimal configuration after project declaration
-        sed -i '/^project(BoringSSL/a\\n# === MINIMAL BUILD CONFIGURATION ===\n# Disable all tests and tools\noption(BUILD_TESTING "Build tests" OFF)\noption(BUILD_TOOLS "Build tools" OFF)\nset(BUILD_TESTING OFF CACHE BOOL "Build tests" FORCE)\nset(BUILD_TOOLS OFF CACHE BOOL "Build tools" FORCE)\n\n# Minimal feature definitions\nadd_definitions(-DOPENSSL_SMALL_CODE)\nadd_definitions(-DOPENSSL_NO_LEGACY_ALGORITHMS)\nadd_definitions(-DOPENSSL_NO_WEAK_SSL_CIPHERS)\nadd_definitions(-DOPENSSL_NO_DTLS)\nadd_definitions(-DOPENSSL_NO_PSK)\n' CMakeLists.txt
-
-        # Find the end of SSL library definition and add early return
-        if grep -n "target_include_directories(ssl PUBLIC" CMakeLists.txt; then
-          SSL_END_LINE=$(grep -n "target_include_directories(ssl PUBLIC" CMakeLists.txt | tail -1 | cut -d: -f1)
-          sed -i "${SSL_END_LINE}a\\n# === MINIMAL BUILD: STOP HERE ===\n# Skip all tests, tools, and examples\nif(NOT BUILD_TESTING AND NOT BUILD_TOOLS)\n  message(STATUS \"Minimal build complete - crypto and ssl libraries only\")\n  return()\nendif()\n" CMakeLists.txt
-          echo "✅ Added early return after SSL library at line $SSL_END_LINE"
-        else
-          echo "⚠️ Could not find SSL library definition"
-        fi
-
-        # 3. Also create a minimal ssl/test/CMakeLists.txt to prevent issues
-        if [ -f "ssl/test/CMakeLists.txt" ]; then
-          echo "# Tests disabled for minimal build" > ssl/test/CMakeLists.txt
-          echo "return()" >> ssl/test/CMakeLists.txt
-        fi
-
-        # 4. Create minimal crypto/test/CMakeLists.txt
-        if [ -f "crypto/test/CMakeLists.txt" ]; then
-          echo "# Tests disabled for minimal build" > crypto/test/CMakeLists.txt
-          echo "return()" >> crypto/test/CMakeLists.txt
-        fi
-
-        echo "✅ Minimal configuration applied directly to CMakeLists.txt"
-
-    - name: Configure build variables
+    - name: Configure environment
       run: |
         NDK_PATH="${{ steps.setup-ndk.outputs.ndk-path }}"
-
-        if [ -z "$NDK_PATH" ] || [ ! -d "$NDK_PATH" ]; then
-          echo "ERROR: NDK path is empty or doesn't exist"
-          exit 1
-        fi
-
-        echo "Using NDK path: $NDK_PATH"
         echo "NDK_ROOT=$NDK_PATH" >> $GITHUB_ENV
-
         case "${{ matrix.arch }}" in
           armeabi-v7a)
             echo "ANDROID_ABI=armeabi-v7a" >> $GITHUB_ENV
@@ -132,299 +97,51 @@ jobs:
             echo "ARCH_FLAGS=-msse4.2 -maes -mavx" >> $GITHUB_ENV
             ;;
         esac
+        echo "CMAKE_TOOLCHAIN_FILE=$NDK_ROOT/build/cmake/android.toolchain.cmake" >> $GITHUB_ENV
 
-        echo "CMAKE_TOOLCHAIN_FILE=$NDK_PATH/build/cmake/android.toolchain.cmake" >> $GITHUB_ENV
+    - name: Create build dir
+      run: mkdir -p boringssl/build-${{ matrix.arch }}
 
-    - name: Create build directory
-      run: |
-        mkdir -p boringssl/build-${{ matrix.arch }}
-
-    - name: Verify minimal configuration
-      run: |
-        cd boringssl
-        echo "=== Verifying Minimal Configuration ==="
-        echo "CMakeLists.txt size: $(wc -l CMakeLists.txt)"
-        echo ""
-        echo "Checking for DTLS references:"
-        if grep -n "d1_" CMakeLists.txt; then
-          echo "❌ DTLS files still found!"
-          exit 1
-        else
-          echo "✅ No DTLS files found"
-        fi
-        echo ""
-        echo "Checking for test references:"
-        if grep -n "_test\|test_" CMakeLists.txt | head -3; then
-          echo "⚠️ Some test references found"
-        else
-          echo "✅ No test files found"
-        fi
-        echo ""
-        echo "Checking for early return:"
-        if grep -n "return()" CMakeLists.txt; then
-          echo "✅ Early return found"
-        else
-          echo "⚠️ No early return found"
-        fi
-        echo ""
-        echo "Last 15 lines of CMakeLists.txt:"
-        tail -15 CMakeLists.txt
-
-    - name: Configure CMake (Minimal & Optimized)
+    - name: CMake & build shared libs
       run: |
         cd boringssl/build-${{ matrix.arch }}
-
-        echo "=== CMake Configuration (Minimal Build) ==="
-        echo "Architecture: ${{ matrix.arch }}"
-        echo "NDK Root: $NDK_ROOT"
-        echo "Android ABI: $ANDROID_ABI"
-        echo "Android Platform: $ANDROID_PLATFORM"
-        echo "Arch Flags: $ARCH_FLAGS"
-
-        COMMON_FLAGS="-Os -DNDEBUG -ffunction-sections -fdata-sections -fvisibility=hidden -fvisibility-inlines-hidden"
-        COMMON_FLAGS="$COMMON_FLAGS -DOPENSSL_SMALL_CODE -DOPENSSL_NO_LEGACY_ALGORITHMS"
-        COMMON_FLAGS="$COMMON_FLAGS -DOPENSSL_NO_WEAK_SSL_CIPHERS -DOPENSSL_NO_DTLS"
-        COMMON_FLAGS="$COMMON_FLAGS -DOPENSSL_NO_PSK"
-        COMMON_FLAGS="$COMMON_FLAGS -flto=thin -fwhole-program-vtables"
-        COMMON_FLAGS="$COMMON_FLAGS -g0 -DNDEBUG"
-
-        if [[ "${{ matrix.arch }}" == "arm64-v8a" ]]; then
-          COMMON_FLAGS="$COMMON_FLAGS $ARCH_FLAGS -DOPENSSL_AARCH64_CRYPTO"
-        elif [[ "${{ matrix.arch }}" == "armeabi-v7a" ]]; then
-          COMMON_FLAGS="$COMMON_FLAGS $ARCH_FLAGS -DOPENSSL_ARM_NEON"
-        else
-          COMMON_FLAGS="$COMMON_FLAGS $ARCH_FLAGS"
-        fi
-
+        COMMON_FLAGS="-Os -DNDEBUG -ffunction-sections -fdata-sections -fvisibility=hidden -fvisibility-inlines-hidden -flto=thin"
+        COMMON_FLAGS="$COMMON_FLAGS -DOPENSSL_SMALL_CODE -DOPENSSL_NO_LEGACY_ALGORITHMS -DOPENSSL_NO_WEAK_SSL_CIPHERS -DOPENSSL_NO_DTLS -DOPENSSL_NO_PSK -DOPENSSL_NO_SRP"
+        COMMON_FLAGS="$COMMON_FLAGS $ARCH_FLAGS"
         cmake .. \
           -G Ninja \
           -DCMAKE_TOOLCHAIN_FILE="$CMAKE_TOOLCHAIN_FILE" \
           -DANDROID_ABI="$ANDROID_ABI" \
           -DANDROID_PLATFORM="$ANDROID_PLATFORM" \
           -DCMAKE_BUILD_TYPE=MinSizeRel \
+          -DBUILD_SHARED_LIBS=ON \
+          -DBUILD_STATIC_LIBS=OFF \
           -DCMAKE_C_FLAGS="$COMMON_FLAGS" \
           -DCMAKE_CXX_FLAGS="$COMMON_FLAGS -fno-rtti -fno-exceptions" \
-          -DCMAKE_EXE_LINKER_FLAGS="-Wl,--gc-sections -Wl,--strip-all -flto=thin" \
           -DCMAKE_SHARED_LINKER_FLAGS="-Wl,--gc-sections -Wl,--strip-all -flto=thin" \
-          -DCMAKE_STATIC_LINKER_FLAGS="" \
-          -DBUILD_SHARED_LIBS=OFF \
-          -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
-          -DANDROID_STL=c++_static \
-          -DCMAKE_MAKE_PROGRAM="$(which ninja)" \
           -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON \
           -DBUILD_TESTING=OFF \
           -DBUILD_TOOLS=OFF
+        ninja ssl crypto
 
-    - name: List available targets and verify no DTLS
+    - name: Verify & strip .so
       run: |
         cd boringssl/build-${{ matrix.arch }}
-        echo "=== Available Build Targets ==="
-        ninja -t targets | grep -E "(crypto|ssl)" | head -10
-        echo ""
-        echo "Total targets:"
-        ninja -t targets | wc -l
-        echo ""
-        echo "Checking for DTLS targets:"
-        if ninja -t targets | grep -i dtls; then
-          echo "❌ DTLS targets found!"
-        else
-          echo "✅ No DTLS targets found"
-        fi
-        echo ""
-        echo "Checking for test targets:"
-        if ninja -t targets | grep -i test | head -3; then
-          echo "⚠️ Some test targets found"
-        else
-          echo "✅ No test targets found"
-        fi
+        SSL_SO=$(find . -name "libssl.so" | head -1)
+        CRYPTO_SO=$(find . -name "libcrypto.so" | head -1)
+        echo "Before strip:" && ls -lh "$SSL_SO" "$CRYPTO_SO"
+        strip --strip-unneeded "$SSL_SO" "$CRYPTO_SO"
+        echo "After strip:" && ls -lh "$SSL_SO" "$CRYPTO_SO"
+        echo "Copying to artifacts..."
+        mkdir -p ../../artifacts/${{ matrix.arch }}/lib
+        cp "$SSL_SO" "$CRYPTO_SO" ../../artifacts/${{ matrix.arch }}/lib/
 
-    - name: Build BoringSSL (Minimal)
+    - name: Install headers
       run: |
-        cd boringssl/build-${{ matrix.arch }}
+        mkdir -p artifacts/${{ matrix.arch }}/include/openssl
+        cp boringssl/include/openssl/*.h artifacts/${{ matrix.arch }}/include/openssl/
 
-        echo "=== Starting Minimal Build ==="
-        ninja crypto ssl -v
-        echo "=== Build completed successfully ==="
-
-    - name: Verify build output
-      run: |
-        cd boringssl/build-${{ matrix.arch }}
-        echo "=== Build Output Verification ==="
-        echo "Build directory contents:"
-        ls -la
-        echo ""
-        echo "Looking for library files:"
-        find . -name "*.a" -type f
-
-        SSL_LIB=""
-        CRYPTO_LIB=""
-
-        for path in ssl/libssl.a libssl.a ./libssl.a; do
-          if [ -f "$path" ]; then
-            SSL_LIB="$path"
-            echo "✅ Found SSL library at: $SSL_LIB"
-            break
-          fi
-        done
-
-        for path in crypto/libcrypto.a libcrypto.a ./libcrypto.a; do
-          if [ -f "$path" ]; then
-            CRYPTO_LIB="$path"
-            echo "✅ Found Crypto library at: $CRYPTO_LIB"
-            break
-          fi
-        done
-
-        if [ -z "$SSL_LIB" ] || [ -z "$CRYPTO_LIB" ]; then
-          echo "❌ Libraries not found!"
-          echo "Available files:"
-          find . -type f -name "*.a"
-          exit 1
-        fi
-
-        echo ""
-        echo "Library sizes (before stripping):"
-        ls -lah "$SSL_LIB" "$CRYPTO_LIB"
-
-        echo ""
-        echo "SSL_LIB_PATH=$(pwd)/$SSL_LIB" >> $GITHUB_ENV
-        echo "CRYPTO_LIB_PATH=$(pwd)/$CRYPTO_LIB" >> $GITHUB_ENV
-
-    - name: Strip and optimize libraries
-      run: |
-        cd boringssl/build-${{ matrix.arch }}
-        echo "=== Post-build Optimization ==="
-        echo "Original sizes:"
-        ls -lah "$SSL_LIB_PATH" "$CRYPTO_LIB_PATH"
-
-        if [[ "${{ matrix.arch }}" == "arm64-v8a" ]]; then
-          STRIP_TOOL="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android-strip"
-        elif [[ "${{ matrix.arch }}" == "armeabi-v7a" ]]; then
-          STRIP_TOOL="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/arm-linux-androideabi-strip"
-        elif [[ "${{ matrix.arch }}" == "x86_64" ]]; then
-          STRIP_TOOL="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android-strip"
-        else
-          STRIP_TOOL="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/i686-linux-android-strip"
-        fi
-
-        if [ -f "$STRIP_TOOL" ]; then
-          echo "Stripping with: $STRIP_TOOL"
-          "$STRIP_TOOL" --strip-all "$SSL_LIB_PATH" || echo "Strip SSL failed"
-          "$STRIP_TOOL" --strip-all "$CRYPTO_LIB_PATH" || echo "Strip Crypto failed"
-        else
-          echo "Strip tool not found, using generic strip"
-          strip --strip-all "$SSL_LIB_PATH" "$CRYPTO_LIB_PATH" 2>/dev/null || echo "Generic strip failed"
-        fi
-
-        echo "Final optimized sizes:"
-        ls -lah "$SSL_LIB_PATH" "$CRYPTO_LIB_PATH"
-
-        TOTAL_SIZE=$(stat -c%s "$SSL_LIB_PATH" "$CRYPTO_LIB_PATH" | awk '{sum+=$1} END {print sum}')
-        echo "Total library size: $(echo $TOTAL_SIZE | awk '{print $1/1024/1024 " MB"}')"
-
-    - name: Verify cipher support and no DTLS
-      run: |
-        cd boringssl/build-${{ matrix.arch }}
-        echo "=== Verifying Essential Cipher Support ==="
-
-        if nm "$CRYPTO_LIB_PATH" 2>/dev/null | grep -i aes | grep -i gcm >/dev/null; then
-          echo "✅ AES-GCM support found"
-        else
-          echo "❌ AES-GCM support missing"
-        fi
-
-        if nm "$CRYPTO_LIB_PATH" 2>/dev/null | grep -i chacha >/dev/null; then
-          echo "✅ ChaCha20-Poly1305 support found"
-        else
-          echo "❌ ChaCha20-Poly1305 support missing"
-        fi
-
-        if nm "$CRYPTO_LIB_PATH" 2>/dev/null | grep -i x25519 >/dev/null; then
-          echo "✅ X25519 key exchange found"
-        else
-          echo "❌ X25519 key exchange missing"
-        fi
-
-        echo ""
-        echo "=== CRITICAL: Verifying DTLS Exclusion ==="
-        if nm "$SSL_LIB_PATH" 2>/dev/null | grep -i dtls >/dev/null; then
-          echo "❌ DTLS symbols found (build failed to exclude DTLS)"
-          nm "$SSL_LIB_PATH" 2>/dev/null | grep -i dtls | head -5
-        else
-          echo "✅ DTLS properly excluded - no DTLS symbols found"
-        fi
-
-        if nm "$SSL_LIB_PATH" 2>/dev/null | grep " d1_" >/dev/null; then
-          echo "❌ DTLS d1_ functions found (DTLS not properly excluded)"
-          nm "$SSL_LIB_PATH" 2>/dev/null | grep " d1_" | head -5
-        else
-          echo "✅ No DTLS d1_ functions found"
-        fi
-
-        echo "Library analysis complete"
-
-    - name: Prepare minimal artifacts
-      run: |
-        ARTIFACTS_DIR="$(pwd)/artifacts/${{ matrix.arch }}"
-        mkdir -p "$ARTIFACTS_DIR/lib"
-        mkdir -p "$ARTIFACTS_DIR/include"
-
-        echo "=== Preparing Minimal Artifacts ==="
-
-        cp "$SSL_LIB_PATH" "$ARTIFACTS_DIR/lib/libssl.a"
-        cp "$CRYPTO_LIB_PATH" "$ARTIFACTS_DIR/lib/libcrypto.a"
-
-        mkdir -p "$ARTIFACTS_DIR/include/openssl"
-        cd boringssl/include/openssl
-
-        ESSENTIAL_HEADERS=(
-          "opensslconf.h" "opensslv.h" "base.h" "ssl.h" "tls1.h" "ssl3.h"
-          "evp.h" "crypto.h" "err.h" "bio.h" "x509.h" "x509v3.h" "pem.h"
-          "rsa.h" "ec.h" "ecdsa.h" "ecdh.h" "dh.h" "rand.h" "sha.h"
-          "aes.h" "chacha.h" "poly1305.h" "curve25519.h" "digest.h"
-          "cipher.h" "hmac.h" "hkdf.h" "pkcs7.h" "stack.h" "lhash.h"
-          "mem.h" "thread.h" "asn1.h" "bn.h" "bytestring.h"
-        )
-
-        for header in "${ESSENTIAL_HEADERS[@]}"; do
-          if [ -f "$header" ]; then
-            cp "$header" "$ARTIFACTS_DIR/include/openssl/"
-          fi
-        done
-
-        cat > "$ARTIFACTS_DIR/include/openssl/boringssl_minimal.h" << 'HEADEREOF'
-        #ifndef BORINGSSL_MINIMAL_H
-        #define BORINGSSL_MINIMAL_H
-
-        // Minimal BoringSSL build for Android HTTP/3
-        // Optimized for: curl, nghttp2, ngtcp2, nghttp3
-
-        // Supported TLS versions: 1.2, 1.3 only
-        // DTLS support: COMPLETELY DISABLED
-
-        // Supported ciphers (hardware accelerated):
-        //   - TLS_AES_128_GCM_SHA256 (AES-NI/ARM Crypto)
-        //   - TLS_CHACHA20_POLY1305_SHA256 (Mobile optimized)
-        //   - TLS_AES_256_GCM_SHA384
-
-        // Key exchange: X25519, P-256
-        // Signatures: Ed25519, ECDSA P-256, RSA-PSS
-
-        #define BORINGSSL_MINIMAL_BUILD 1
-        #define BORINGSSL_ANDROID_BUILD 1
-        #define BORINGSSL_NO_DTLS 1
-        #define BORINGSSL_HTTP3_OPTIMIZED 1
-
-        #endif
-        HEADEREOF
-
-        echo "Final artifact sizes for ${{ matrix.arch }}:"
-        ls -lah "$ARTIFACTS_DIR/lib/"
-
-        echo "Header count: $(find "$ARTIFACTS_DIR/include" -name "*.h" | wc -l)"
-        echo "Total artifact size: $(du -sh "$ARTIFACTS_DIR" | cut -f1)"
-
-    - name: Upload minimal artifacts
+    - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:
         name: boringssl-minimal-android-${{ matrix.arch }}
@@ -435,131 +152,25 @@ jobs:
     needs: build-boringssl-minimal
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
-
     steps:
-    - name: Download all artifacts
+    - name: Download artifacts
       uses: actions/download-artifact@v4
 
-    - name: Package minimal release
+    - name: Package release
       run: |
-        mkdir -p boringssl-minimal-android
+        mkdir -p release/android
+        cp -r boringssl-minimal-android-* release/android/
+        cd release/android
+        tar czf boringssl-minimal-android.tar.gz *
+        ls -lh boringssl-minimal-android.tar.gz
 
-        echo "=== Packaging Ultra-Minimal BoringSSL Release ==="
-
-        for arch in armeabi-v7a arm64-v8a x86 x86_64; do
-          if [ -d "boringssl-minimal-android-$arch" ]; then
-            mkdir -p boringssl-minimal-android/$arch
-            cp -r boringssl-minimal-android-$arch/* boringssl-minimal-android/$arch/
-            echo "✅ Packaged $arch"
-            echo "$arch library sizes:"
-            ls -lah boringssl-minimal-android/$arch/lib/
-          else
-            echo "❌ $arch artifacts missing"
-          fi
-        done
-
-        if [ -d "boringssl-minimal-android-arm64-v8a/include" ]; then
-          cp -r boringssl-minimal-android-arm64-v8a/include boringssl-minimal-android/
-        fi
-
-        cat > boringssl-minimal-android/README.md << 'READMEEOF'
-        # BoringSSL Ultra-Minimal Android Build 🚀
-
-        **Smallest possible BoringSSL with DTLS completely removed**
-
-        ## 📊 Build Stats
-        - **Size**: ~2-3MB total (vs 35MB+ standard build)
-        - **Performance**: Hardware-accelerated ciphers
-        - **Focus**: HTTP/3 only, NO DTLS whatsoever
-
-        ## 🎯 Perfect For
-        - **curl** with HTTP/3 support
-        - **nghttp2** (HTTP/2)
-        - **ngtcp2** (QUIC transport)
-        - **nghttp3** (HTTP/3)
-        - Mobile apps requiring minimal footprint
-
-        ## 🔐 Supported Ciphers (High Performance)
-        ```
-        TLS 1.3 (Primary):
-        ✅ TLS_AES_128_GCM_SHA256      (AES-NI/ARM Crypto)
-        ✅ TLS_CHACHA20_POLY1305_SHA256 (Mobile optimized)
-        ✅ TLS_AES_256_GCM_SHA384      (High security)
-
-        TLS 1.2 (Compatibility):
-        ✅ ECDHE-ECDSA-AES128-GCM-SHA256
-        ✅ ECDHE-RSA-AES128-GCM-SHA256
-        ✅ ECDHE-ECDSA-CHACHA20-POLY1305
-        ```
-        ## ❌ Completely Excluded (Size Optimization)
-        - ❌ **DTLS** (all d1_*.cc files removed)
-        - ❌ Legacy ciphers (DES, RC4, MD5, etc.)
-        - ❌ PSK and SRP
-        - ❌ All test code and tools
-        - ❌ Debug symbols
-
-        **Perfect for production HTTP/3 clients!** 🎯
-        READMEEOF
-
-        cat > boringssl-minimal-android/BUILD_INFO.txt << BUILDEOF
-        BoringSSL Ultra-Minimal Android Build (NO DTLS)
-        ================================================
-
-        Build Date: $(date)
-        BoringSSL Release: 0.20250701.0 (ultra-minimal, NO DTLS)
-        NDK Version: r28b
-        Optimization: -Os + LTO + aggressive strip
-        Focus: HTTP/3 only, DTLS completely removed
-
-        Features COMPLETELY EXCLUDED for size:
-        - DTLS support (all d1_*.cc files)
-        - Legacy algorithms
-        - Test code and tools
-        - Debug symbols
-        - PSK/SRP support
-
-        Architecture Sizes:
-        BUILDEOF
-
-        for arch in armeabi-v7a arm64-v8a x86 x86_64; do
-          if [ -d "boringssl-minimal-android/$arch/lib" ]; then
-            echo "" >> boringssl-minimal-android/BUILD_INFO.txt
-            echo "$arch:" >> boringssl-minimal-android/BUILD_INFO.txt
-            ls -lah boringssl-minimal-android/$arch/lib/ >> boringssl-minimal-android/BUILD_INFO.txt
-          fi
-        done
-
-        echo "" >> boringssl-minimal-android/BUILD_INFO.txt
-        echo "Total Package Size: $(du -sh boringssl-minimal-android | cut -f1)" >> boringssl-minimal-android/BUILD_INFO.txt
-
-        tar -czf boringssl-minimal-android.tar.gz boringssl-minimal-android/
-        echo "Package size: $(ls -lah boringssl-minimal-android.tar.gz | awk '{print $5}')"
-        echo "Total libraries: $(find boringssl-minimal-android -name \"*.a\" | wc -l)"
-
-    - name: Create Ultra-Minimal Release
+    - name: Create GitHub Release
       uses: softprops/action-gh-release@v1
       with:
         tag_name: boringssl-no-dtls-0.20250701.0-${{ github.run_number }}
-        name: BoringSSL NO-DTLS 0.20250701.0 (HTTP/3 Pure) 🚀
+        name: BoringSSL Ultra-Minimal Android Shared (HTTP/3) 🚀
         body: |
-          # BoringSSL Ultra-Minimal Android Build (NO DTLS)
-
-          **Smallest possible BoringSSL with DTLS completely removed**
-
-          ## 🎯 Perfect For HTTP/3 Only
-          - **curl** with HTTP/3 support
-          - **nghttp2/nghttp3** integration
-          - **ngtcp2** QUIC transport
-          - Mobile apps requiring minimal size
-
-          ## ⚡ Ultra-Minimal Features
-          - **~2-3MB total** (vs 35MB+ standard)
-          - **NO DTLS** - completely removed from source
-          - **TLS 1.2/1.3** only
-          - **Fast ciphers**: AES-GCM, ChaCha20-Poly1305
-
-          ## 🏗️ Architectures
-          - ✅ **arm64-v8a** (AES crypto extensions)
-          - ✅ **armeabi-v7a** (NEON optimized)
-          - ✅ **x86_64** (AES-NI + AVX)
-          - ✅ **x86**
+          Shared-library build only (~2–3 MB each)
+          - libcrypto.so
+          - libssl.so
+          DTLS, tests, tools, fipsmodule removed. Optimized for HTTP/3.
