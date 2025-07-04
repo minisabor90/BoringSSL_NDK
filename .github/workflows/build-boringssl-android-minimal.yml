@@ -50,7 +50,7 @@ jobs:
     - name: Generate build files
       run: |
         # First run the general generator
-        python3 util/generate_build_files.py
+        # python3 util/generate_build_files.py
         
         # Then run for Android specifically
         python3 util/generate_build_files.py android
