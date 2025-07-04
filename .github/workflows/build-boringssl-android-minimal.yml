@@ -1,92 +1,103 @@
+# GitHub Actions Workflow to build BoringSSL for Android
+#
+# This workflow checks out a specific tag of Google's BoringSSL,
+# builds it for multiple Android architectures, and uploads the
+# resulting static libraries as artifacts.
+#
+# Key Features:
+# - Uses a matrix strategy to build for armeabi-v7a, arm64-v8a, x86, and x86_64.
+# - Installs the Android NDK automatically.
+# - Uses CMake with 'MinSizeRel' to create the smallest possible binaries.
+# - Disables tests and fuzzers to reduce library size.
+# - Includes a step to verify that libcrypto_static.a is under 4MB.
+# - Uploads the static libraries for each architecture as separate artifacts.
+
 name: Build BoringSSL for Android
 
 on:
-  push:
-    branches: [ main ]
+  workflow_dispatch: # Allows manual triggering of the workflow
 
 jobs:
-  build:
+  build_boringssl:
+    name: Build for ${{ matrix.arch }}
     runs-on: ubuntu-latest
     strategy:
+      # We use a matrix to run the same set of steps for each target architecture.
       matrix:
-        arch: [armeabi-v7a, arm64-v8a, x86, x86_64]
+        arch:
+          - armeabi-v7a
+          - arm64-v8a
+          - x86
+          - x86_64
 
     steps:
-    - uses: actions/checkout@v4
+      - name: Install Build Dependencies
+        run: sudo apt-get update && sudo apt-get install -y ninja-build golang
 
-    - name: Set up Android NDK
-      id: setup-ndk
-      uses: nttld/setup-ndk@v1
-      with:
-        ndk-version: r28b
+      - name: Install Android NDK
+        uses: nesis/setup-ndk@v1
+        with:
+          ndk-version: r25c # A recent, stable NDK version
 
-    - name: Configure build variables
-      run: |
-        echo "NDK_ROOT=${{ steps.setup-ndk.outputs.ndk-path }}" >> $GITHUB_ENV
-        case "${{ matrix.arch }}" in
-          armeabi-v7a) 
-            echo "ANDROID_ABI=armeabi-v7a" >> $GITHUB_ENV
-            echo "ANDROID_PLATFORM=android-21" >> $GITHUB_ENV
-            echo "ARCH_FLAGS=-mfpu=neon" >> $GITHUB_ENV ;;
-          arm64-v8a) 
-            echo "ANDROID_ABI=arm64-v8a" >> $GITHUB_ENV
-            echo "ANDROID_PLATFORM=android-21" >> $GITHUB_ENV
-            echo "ARCH_FLAGS=-march=armv8-a+crypto" >> $GITHUB_ENV ;;
-          x86) 
-            echo "ANDROID_ABI=x86" >> $GITHUB_ENV
-            echo "ANDROID_PLATFORM=android-21" >> $GITHUB_ENV
-            echo "ARCH_FLAGS=-msse4.2 -maes" >> $GITHUB_ENV ;;
-          x86_64) 
-            echo "ANDROID_ABI=x86_64" >> $GITHUB_ENV
-            echo "ANDROID_PLATFORM=android-21" >> $GITHUB_ENV
-            echo "ARCH_FLAGS=-msse4.2 -maes -mavx" >> $GITHUB_ENV ;;
-        esac
-        echo "CMAKE_TOOLCHAIN_FILE=$NDK_ROOT/build/cmake/android.toolchain.cmake" >> $GITHUB_ENV
+      - name: Checkout BoringSSL
+        uses: actions/checkout@v4
+        with:
+          repository: 'google/boringssl'
+          # As requested, we are checking out a specific tag.
+          ref: '0.20250701.0'
 
-    - name: Print build variables
-      run: |
-        echo "NDK_ROOT=$NDK_ROOT"
-        echo "CMAKE_TOOLCHAIN_FILE=$CMAKE_TOOLCHAIN_FILE"
-        echo "ANDROID_ABI=$ANDROID_ABI"
-        echo "ANDROID_PLATFORM=$ANDROID_PLATFORM"
-        echo "ARCH_FLAGS=$ARCH_FLAGS"
+      - name: Configure and Build BoringSSL
+        # This step configures the build using CMake and then compiles with Ninja.
+        #
+        # NOTE: We are using CMake directly instead of the older 'generate_build_files.py'
+        # script. This is the modern, recommended approach for BoringSSL and gives us
+        # the necessary control to create minimal-size builds.
+        #
+        # -DANDROID_ABI: Specifies the target architecture from the matrix.
+        # -DCMAKE_TOOLCHAIN_FILE: Points to the NDK's standard toolchain file.
+        # -DANDROID_PLATFORM: Sets the minimum Android API level. '21' is a common choice.
+        # -DCMAKE_BUILD_TYPE=MinSizeRel: Crucial for optimizing for the smallest binary size.
+        # -DBORINGSSL_BUILD_TESTS=OFF: Skips building tests to reduce size and build time.
+        run: |
+          cmake -B build -GNinja \
+            -DANDROID_ABI=${{ matrix.arch }} \
+            -DCMAKE_TOOLCHAIN_FILE=${{ env.ANDROID_NDK_HOME }}/build/cmake/android.toolchain.cmake \
+            -DANDROID_PLATFORM=android-21 \
+            -DCMAKE_BUILD_TYPE=MinSizeRel \
+            -DBORINGSSL_BUILD_TESTS=OFF
+          ninja -C build crypto ssl
 
-    - name: Apply minimal configuration
-      working-directory: boringssl
-      run: |
-        sed -i '/d1_both\.cc/d;/d1_lib\.cc/d;/d1_pkt\.cc/d;/d1_srtp\.cc/d' CMakeLists.txt
-        sed -i '/_test\.cc/d;/test_.*\.cc/d' CMakeLists.txt
-        sed -i '/^project(BoringSSL/a\
-        add_definitions(-DOPENSSL_NO_DTLS -DOPENSSL_NO_PSK -DOPENSSL_NO_LEGACY_ALGORITHMS -DOPENSSL_NO_WEAK_SSL_CIPHERS)' CMakeLists.txt
-        echo "return()" > ssl/test/CMakeLists.txt
-        echo "return()" > crypto/test/CMakeLists.txt
+      - name: Verify Library Size
+        # This step checks if the final static library meets the size requirement.
+        # The workflow will fail if the library is larger than 4MB.
+        run: |
+          set -e # Exit immediately if a command fails
+          SIZE_BYTES=$(stat -c%s "build/crypto/libcrypto_static.a")
+          MAX_SIZE_BYTES=$((4 * 1024 * 1024)) # 4MB in bytes
 
-    - name: Configure CMake
-      run: |
-        mkdir -p boringssl/build-${{ matrix.arch }}
-        cd boringssl/build-${{ matrix.arch }}
-        cmake .. \
-          -G Ninja \
-          -DCMAKE_TOOLCHAIN_FILE="$CMAKE_TOOLCHAIN_FILE" \
-          -DANDROID_ABI="$ANDROID_ABI" \
-          -DANDROID_PLATFORM="$ANDROID_PLATFORM" \
-          -DCMAKE_BUILD_TYPE=Release \
-          -DCMAKE_C_FLAGS="-O2 -DNDEBUG $ARCH_FLAGS -fvisibility=hidden -ffunction-sections -fdata-sections" \
-          -DCMAKE_CXX_FLAGS="-O2 -DNDEBUG $ARCH_FLAGS -fno-rtti -fno-exceptions" \
-          -DCMAKE_EXE_LINKER_FLAGS="-Wl,--gc-sections -Wl,--strip-all" \
-          -DBUILD_SHARED_LIBS=OFF \
-          -DANDROID_STL=c++_static \
-          -DBUILD_TESTING=OFF \
-          -DBUILD_TOOLS=OFF
+          echo "Checking size of build/crypto/libcrypto_static.a..."
+          ls -lh build/crypto/libcrypto_static.a
 
-    - name: Build
-      run: |
-        cd boringssl/build-${{ matrix.arch }}
-        ninja crypto ssl
+          if [ "$SIZE_BYTES" -gt "$MAX_SIZE_BYTES" ]; then
+            echo "Error: libcrypto_static.a is larger than 4MB (${SIZE_BYTES} bytes)."
+            exit 1
+          else
+            echo "Size check passed. Library is ${SIZE_BYTES} bytes."
+          fi
 
-    - name: Upload CMake logs (on failure)
-      if: failure()
-      uses: actions/upload-artifact@v4
-      with:
-        name: cmake-logs-${{ matrix.arch }}
-        path: boringssl/build-${{ matrix.arch }}/CMakeFiles/CMake*.log
+      - name: Prepare Artifacts
+        # Create a directory to store the libraries and headers for easy uploading.
+        run: |
+          mkdir -p artifact/lib/${{ matrix.arch }}
+          mkdir -p artifact/include
+          cp build/crypto/libcrypto_static.a artifact/lib/${{ matrix.arch }}/
+          cp build/ssl/libssl_static.a artifact/lib/${{ matrix.arch }}/
+          cp -r include/* artifact/include/
+
+      - name: Upload Build Artifact
+        # This uploads the compiled libraries and headers. You can download them from
+        # the "Summary" page of the completed workflow run.
+        uses: actions/upload-artifact@v4
+        with:
+          name: boringssl-android-${{ matrix.arch }}
+          path: artifact/
