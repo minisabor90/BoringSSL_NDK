@@ -53,28 +53,28 @@ jobs:
 
           # 3. Inject minimal-build options immediately after project declaration
           sed -i '/^project(BoringSSL/a\
-# === Minimal Build Configuration ===\
-option(BUILD_TESTING "Build tests" OFF)\
-option(BUILD_TOOLS "Build tools" OFF)\
-set(BUILD_TESTING OFF CACHE BOOL "" FORCE)\
-set(BUILD_TOOLS OFF CACHE BOOL "" FORCE)\
-add_definitions(-DOPENSSL_SMALL_CODE)\
-add_definitions(-DOPENSSL_NO_LEGACY_ALGORITHMS)\
-add_definitions(-DOPENSSL_NO_WEAK_SSL_CIPHERS)\
-add_definitions(-DOPENSSL_NO_DTLS)\
-add_definitions(-DOPENSSL_NO_PSK)\
-' CMakeLists.txt
+          # === Minimal Build Configuration ===\
+          option(BUILD_TESTING "Build tests" OFF)\
+          option(BUILD_TOOLS "Build tools" OFF)\
+          set(BUILD_TESTING OFF CACHE BOOL "" FORCE)\
+          set(BUILD_TOOLS OFF CACHE BOOL "" FORCE)\
+          add_definitions(-DOPENSSL_SMALL_CODE)\
+          add_definitions(-DOPENSSL_NO_LEGACY_ALGORITHMS)\
+          add_definitions(-DOPENSSL_NO_WEAK_SSL_CIPHERS)\
+          add_definitions(-DOPENSSL_NO_DTLS)\
+          add_definitions(-DOPENSSL_NO_PSK)\
+          ' CMakeLists.txt
 
           # 4. Early return once ssl target is configured
           SSL_LINE=$(grep -n "target_include_directories(ssl PUBLIC" CMakeLists.txt | tail -1 | cut -d: -f1)
           if [ -n "$SSL_LINE" ]; then
             sed -i "${SSL_LINE}a\
-if(NOT BUILD_TESTING AND NOT BUILD_TOOLS)\
-  message(STATUS \"Minimal build complete — crypto & ssl only\")\
-  return()\
-endif()\
-" CMakeLists.txt
-          fi
+          if(NOT BUILD_TESTING AND NOT BUILD_TOOLS)\
+            message(STATUS \"Minimal build complete — crypto & ssl only\")\
+            return()\
+          endif()\
+          " CMakeLists.txt
+                    fi
 
           # 5. Stub out test subdirs
           printf "# Tests disabled for minimal build\nreturn()\n" > ssl/test/CMakeLists.txt
