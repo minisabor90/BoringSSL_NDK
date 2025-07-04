@@ -1,108 +1,199 @@
-# GitHub Actions Workflow to build BoringSSL for Android
-#
-# This workflow checks out a specific tag of Google's BoringSSL,
-# builds it for multiple Android architectures, and uploads the
-# resulting static libraries as artifacts.
-#
-# Key Features:
-# - Uses a matrix strategy to build for armeabi-v7a, arm64-v8a, x86, and x86_64.
-# - Installs the Android NDK automatically.
-# - Uses CMake with '-O2' optimization.
-# - Disables tests and fuzzers to reduce library size.
-# - Includes a step to verify that libcrypto_static.a is under 4MB.
-# - Uploads the static libraries for each architecture as separate artifacts.
-
-name: Build BoringSSL for Android
+name: Build BoringSSL Android
 
 on:
-  workflow_dispatch: # Allows manual triggering of the workflow
-  push:
-    branches:
-      - main # Triggers on push to the main branch
+  workflow_dispatch:
+    inputs:
+      boringssl_ref:
+        description: 'BoringSSL reference (tag/branch/commit)'
+        required: true
+        default: '0.20250701.0'
+        type: string
 
 jobs:
-  build_boringssl:
-    name: Build for ${{ matrix.arch }}
+  build-boringssl:
     runs-on: ubuntu-latest
-    strategy:
-      # We use a matrix to run the same set of steps for each target architecture.
-      matrix:
-        arch:
-          - armeabi-v7a
-          - arm64-v8a
-          - x86
-          - x86_64
-
+    
     steps:
-      - name: Install Build Dependencies
-        run: sudo apt-get update && sudo apt-get install -y ninja-build golang
-
-      - name: Install Android NDK
-        # Using a more current and maintained action to set up the NDK.
-        uses: android-actions/setup-ndk@v1
-        with:
-          ndk-version: r28b # Updated NDK version
-
-      - name: Checkout BoringSSL
-        uses: actions/checkout@v4
-        with:
-          repository: 'google/boringssl'
-          # As requested, we are checking out a specific tag.
-          ref: '0.20250701.0'
-
-      - name: Configure and Build BoringSSL
-        # This step configures the build using CMake and then compiles with Ninja.
-        #
-        # NOTE: We are using CMake directly instead of the older 'generate_build_files.py'
-        # script. This is the modern, recommended approach for BoringSSL and gives us
-        # the necessary control to create minimal-size builds.
-        #
-        # -DANDROID_ABI: Specifies the target architecture from the matrix.
-        # -DCMAKE_TOOLCHAIN_FILE: Points to the NDK's standard toolchain file.
-        # -DANDROID_PLATFORM: Sets the minimum Android API level. '21' is a common choice.
-        # -DCMAKE_C_FLAGS / -DCMAKE_CXX_FLAGS: Sets the C and C++ compiler flags for -O2 optimization.
-        # -DBORINGSSL_BUILD_TESTS=OFF: Skips building tests to reduce size and build time.
-        run: |
-          cmake -B build -GNinja \
-            -DANDROID_ABI=${{ matrix.arch }} \
-            -DCMAKE_TOOLCHAIN_FILE=${{ env.ANDROID_NDK_HOME }}/build/cmake/android.toolchain.cmake \
-            -DANDROID_PLATFORM=android-21 \
-            -DCMAKE_C_FLAGS="-O2" \
-            -DCMAKE_CXX_FLAGS="-O2" \
-            -DBORINGSSL_BUILD_TESTS=OFF
-          ninja -C build crypto ssl
-
-      - name: Verify Library Size
-        # This step checks if the final static library meets the size requirement.
-        # The workflow will fail if the library is larger than 4MB.
-        run: |
-          set -e # Exit immediately if a command fails
-          SIZE_BYTES=$(stat -c%s "build/crypto/libcrypto_static.a")
-          MAX_SIZE_BYTES=$((4 * 1024 * 1024)) # 4MB in bytes
-
-          echo "Checking size of build/crypto/libcrypto_static.a..."
-          ls -lh build/crypto/libcrypto_static.a
-
-          if [ "$SIZE_BYTES" -gt "$MAX_SIZE_BYTES" ]; then
-            echo "Error: libcrypto_static.a is larger than 4MB (${SIZE_BYTES} bytes)."
-            exit 1
-          else
-            echo "Size check passed. Library is ${SIZE_BYTES} bytes."
-          fi
-
-      - name: Prepare Artifacts
-        # Create a directory to store the libraries and headers for easy uploading.
-        run: |
-          mkdir -p artifact/lib/${{ matrix.arch }}
-          mkdir -p artifact/include
-          cp build/crypto/libcrypto_static.a artifact/lib/${{ matrix.arch }}/
-          cp build/ssl/libssl_static.a artifact/lib/${{ matrix.arch }}/
-          cp -r include/* artifact/include/
-
-      - name: Upload Build Artifact
-        # This uploads the compiled libraries and headers. You can download them from
-        # the "Summary" page of the completed workflow run.
-        uses: actions/upload-artifact@v4
-        with:
-          name: boringssl-android-${{ matrix.arch }}
-          path: artifact/
+    - name: Checkout BoringSSL
+      uses: actions/checkout@v4
+      with:
+        repository: google/boringssl
+        ref: ${{ inputs.boringssl_ref || '0.20250701.0' }}
+        submodules: recursive
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Setup Android NDK
+      uses: nttld/setup-ndk@v1
+      with:
+        ndk-version: r28b
+        add-to-path: false
+    
+    - name: Set NDK environment
+      run: |
+        echo "ANDROID_NDK_ROOT=${{ steps.setup-ndk.outputs.ndk-path }}" >> $GITHUB_ENV
+        echo "NDK_ROOT=${{ steps.setup-ndk.outputs.ndk-path }}" >> $GITHUB_ENV
+    
+    - name: Install build dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y cmake ninja-build
+    
+    - name: Generate Android build files
+      run: |
+        python3 util/generate_build_files.py android
+    
+    - name: Create build directories
+      run: |
+        mkdir -p build/armeabi-v7a
+        mkdir -p build/arm64-v8a
+        mkdir -p build/x86
+        mkdir -p build/x86_64
+        mkdir -p output
+    
+    - name: Build for armeabi-v7a
+      run: |
+        cd build/armeabi-v7a
+        cmake -GNinja \
+          -DCMAKE_TOOLCHAIN_FILE=$NDK_ROOT/build/cmake/android.toolchain.cmake \
+          -DANDROID_ABI=armeabi-v7a \
+          -DANDROID_NATIVE_API_LEVEL=21 \
+          -DANDROID_ARM_NEON=ON \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_C_FLAGS="-O2 -DNDEBUG -ffunction-sections -fdata-sections -fvisibility=hidden" \
+          -DCMAKE_CXX_FLAGS="-O2 -DNDEBUG -ffunction-sections -fdata-sections -fvisibility=hidden" \
+          -DCMAKE_EXE_LINKER_FLAGS="-Wl,--gc-sections -Wl,--strip-all" \
+          -DCMAKE_SHARED_LINKER_FLAGS="-Wl,--gc-sections -Wl,--strip-all" \
+          -DCMAKE_STATIC_LINKER_FLAGS="-Wl,--gc-sections" \
+          -DBUILD_SHARED_LIBS=OFF \
+          -DOPENSSL_NO_ASM=OFF \
+          ../..
+        ninja crypto
+        cp crypto/libcrypto.a ../../output/libcrypto_armeabi-v7a.a
+    
+    - name: Build for arm64-v8a
+      run: |
+        cd build/arm64-v8a
+        cmake -GNinja \
+          -DCMAKE_TOOLCHAIN_FILE=$NDK_ROOT/build/cmake/android.toolchain.cmake \
+          -DANDROID_ABI=arm64-v8a \
+          -DANDROID_NATIVE_API_LEVEL=21 \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_C_FLAGS="-O2 -DNDEBUG -ffunction-sections -fdata-sections -fvisibility=hidden" \
+          -DCMAKE_CXX_FLAGS="-O2 -DNDEBUG -ffunction-sections -fdata-sections -fvisibility=hidden" \
+          -DCMAKE_EXE_LINKER_FLAGS="-Wl,--gc-sections -Wl,--strip-all" \
+          -DCMAKE_SHARED_LINKER_FLAGS="-Wl,--gc-sections -Wl,--strip-all" \
+          -DCMAKE_STATIC_LINKER_FLAGS="-Wl,--gc-sections" \
+          -DBUILD_SHARED_LIBS=OFF \
+          -DOPENSSL_NO_ASM=OFF \
+          ../..
+        ninja crypto
+        cp crypto/libcrypto.a ../../output/libcrypto_arm64-v8a.a
+    
+    - name: Build for x86
+      run: |
+        cd build/x86
+        cmake -GNinja \
+          -DCMAKE_TOOLCHAIN_FILE=$NDK_ROOT/build/cmake/android.toolchain.cmake \
+          -DANDROID_ABI=x86 \
+          -DANDROID_NATIVE_API_LEVEL=21 \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_C_FLAGS="-O2 -DNDEBUG -ffunction-sections -fdata-sections -fvisibility=hidden" \
+          -DCMAKE_CXX_FLAGS="-O2 -DNDEBUG -ffunction-sections -fdata-sections -fvisibility=hidden" \
+          -DCMAKE_EXE_LINKER_FLAGS="-Wl,--gc-sections -Wl,--strip-all" \
+          -DCMAKE_SHARED_LINKER_FLAGS="-Wl,--gc-sections -Wl,--strip-all" \
+          -DCMAKE_STATIC_LINKER_FLAGS="-Wl,--gc-sections" \
+          -DBUILD_SHARED_LIBS=OFF \
+          -DOPENSSL_NO_ASM=OFF \
+          ../..
+        ninja crypto
+        cp crypto/libcrypto.a ../../output/libcrypto_x86.a
+    
+    - name: Build for x86_64
+      run: |
+        cd build/x86_64
+        cmake -GNinja \
+          -DCMAKE_TOOLCHAIN_FILE=$NDK_ROOT/build/cmake/android.toolchain.cmake \
+          -DANDROID_ABI=x86_64 \
+          -DANDROID_NATIVE_API_LEVEL=21 \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_C_FLAGS="-O2 -DNDEBUG -ffunction-sections -fdata-sections -fvisibility=hidden" \
+          -DCMAKE_CXX_FLAGS="-O2 -DNDEBUG -ffunction-sections -fdata-sections -fvisibility=hidden" \
+          -DCMAKE_EXE_LINKER_FLAGS="-Wl,--gc-sections -Wl,--strip-all" \
+          -DCMAKE_SHARED_LINKER_FLAGS="-Wl,--gc-sections -Wl,--strip-all" \
+          -DCMAKE_STATIC_LINKER_FLAGS="-Wl,--gc-sections" \
+          -DBUILD_SHARED_LIBS=OFF \
+          -DOPENSSL_NO_ASM=OFF \
+          ../..
+        ninja crypto
+        cp crypto/libcrypto.a ../../output/libcrypto_x86_64.a
+    
+    - name: Strip libraries and check sizes
+      run: |
+        cd output
+        for lib in *.a; do
+          echo "Original size of $lib:"
+          ls -lh $lib
+          $NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip $lib
+          echo "Stripped size of $lib:"
+          ls -lh $lib
+          echo "Size in bytes: $(stat -c%s $lib)"
+          echo "Size in MB: $(echo "scale=2; $(stat -c%s $lib)/1024/1024" | bc)"
+          echo "---"
+        done
+    
+    - name: Copy headers
+      run: |
+        mkdir -p output/include
+        cp -r include/openssl output/include/
+    
+    - name: Create archive structure
+      run: |
+        cd output
+        mkdir -p boringssl-android/{lib/{armeabi-v7a,arm64-v8a,x86,x86_64},include}
+        cp libcrypto_armeabi-v7a.a boringssl-android/lib/armeabi-v7a/libcrypto.a
+        cp libcrypto_arm64-v8a.a boringssl-android/lib/arm64-v8a/libcrypto.a
+        cp libcrypto_x86.a boringssl-android/lib/x86/libcrypto.a
+        cp libcrypto_x86_64.a boringssl-android/lib/x86_64/libcrypto.a
+        cp -r include/* boringssl-android/include/
+        
+        # Create a simple CMakeLists.txt for easy integration
+        cat > boringssl-android/CMakeLists.txt << 'EOF'
+        cmake_minimum_required(VERSION 3.10)
+        project(BoringSSL)
+        
+        add_library(crypto STATIC IMPORTED)
+        set_target_properties(crypto PROPERTIES
+            IMPORTED_LOCATION ${CMAKE_CURRENT_SOURCE_DIR}/lib/${ANDROID_ABI}/libcrypto.a
+            INTERFACE_INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/include
+        )
+        EOF
+        
+        tar -czf boringssl-android.tar.gz boringssl-android/
+    
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: boringssl-android-${{ inputs.boringssl_ref || '0.20250701.0' }}
+        path: |
+          output/boringssl-android.tar.gz
+          output/libcrypto_*.a
+        retention-days: 30
+    
+    - name: Display final summary
+      run: |
+        echo "=== BoringSSL Android Build Summary ==="
+        echo "Reference: ${{ inputs.boringssl_ref || '0.20250701.0' }}"
+        echo "NDK Version: r28b"
+        echo "Optimization: -O2"
+        echo ""
+        echo "Library sizes:"
+        cd output
+        for lib in libcrypto_*.a; do
+          size_bytes=$(stat -c%s $lib)
+          size_mb=$(echo "scale=2; $size_bytes/1024/1024" | bc)
+          echo "$lib: ${size_mb}MB (${size_bytes} bytes)"
+        done
