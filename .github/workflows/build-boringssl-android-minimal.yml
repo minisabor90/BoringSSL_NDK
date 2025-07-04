@@ -56,41 +56,41 @@ jobs:
         fi
         
         # 2. Create comprehensive CMakeLists.txt patch to disable tests/tools
-        cat > cmake_minimal.patch << 'EOF'
---- a/CMakeLists.txt
-+++ b/CMakeLists.txt
-@@ -1,6 +1,20 @@
- cmake_minimum_required(VERSION 3.5)
- 
- project(BoringSSL LANGUAGES C CXX)
-+
-+# Minimal build configuration for Android
-+option(BUILD_TESTING "Build tests" OFF)
-+option(BUILD_TOOLS "Build tools" OFF)
-+set(BUILD_TESTING OFF CACHE BOOL "Build tests" FORCE)
-+set(BUILD_TOOLS OFF CACHE BOOL "Build tools" FORCE)
-+
-+# Minimal feature set
-+add_definitions(-DOPENSSL_NO_LEGACY_ALGORITHMS)
-+add_definitions(-DOPENSSL_NO_WEAK_SSL_CIPHERS)
-+add_definitions(-DOPENSSL_NO_DTLS)
-+add_definitions(-DOPENSSL_NO_PSK)
-+add_definitions(-DOPENSSL_NO_SRP)
-+add_definitions(-DOPENSSL_SMALL_CODE)
- 
- if(ANDROID)
-   # CMake automatically handles API level selection
-@@ -670,6 +684,9 @@ target_link_libraries(ssl crypto)
- 
- target_include_directories(ssl PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
- 
-+# Skip all tests and tools for minimal build
-+if(NOT BUILD_TESTING AND NOT BUILD_TOOLS)
-+  return()
-+endif()
-+
- add_library(
-EOF
+        cat > cmake_minimal.patch << 'PATCHEOF'
+        --- a/CMakeLists.txt
+        +++ b/CMakeLists.txt
+        @@ -1,6 +1,20 @@
+         cmake_minimum_required(VERSION 3.5)
+         
+         project(BoringSSL LANGUAGES C CXX)
+        +
+        +# Minimal build configuration for Android
+        +option(BUILD_TESTING "Build tests" OFF)
+        +option(BUILD_TOOLS "Build tools" OFF)
+        +set(BUILD_TESTING OFF CACHE BOOL "Build tests" FORCE)
+        +set(BUILD_TOOLS OFF CACHE BOOL "Build tools" FORCE)
+        +
+        +# Minimal feature set
+        +add_definitions(-DOPENSSL_NO_LEGACY_ALGORITHMS)
+        +add_definitions(-DOPENSSL_NO_WEAK_SSL_CIPHERS)
+        +add_definitions(-DOPENSSL_NO_DTLS)
+        +add_definitions(-DOPENSSL_NO_PSK)
+        +add_definitions(-DOPENSSL_NO_SRP)
+        +add_definitions(-DOPENSSL_SMALL_CODE)
+         
+         if(ANDROID)
+           # CMake automatically handles API level selection
+        @@ -670,6 +684,9 @@ target_link_libraries(ssl crypto)
+         
+         target_include_directories(ssl PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
+         
+        +# Skip all tests and tools for minimal build
+        +if(NOT BUILD_TESTING AND NOT BUILD_TOOLS)
+        +  return()
+        +endif()
+        +
+         add_library(
+        PATCHEOF
         
         # Apply the patch
         if patch -p1 --dry-run < cmake_minimal.patch; then
@@ -110,35 +110,35 @@ EOF
             head -n $((SSL_LIB_LINE + 2)) CMakeLists.txt > CMakeLists_minimal.txt
             
             # Add our minimal configuration at the top
-            cat > CMakeLists_new.txt << 'EOFCMAKE'
-cmake_minimum_required(VERSION 3.5)
-
-project(BoringSSL LANGUAGES C CXX)
-
-# Minimal build - libraries only
-option(BUILD_TESTING "Build tests" OFF)
-option(BUILD_TOOLS "Build tools" OFF)
-
-# Minimal feature definitions
-add_definitions(-DOPENSSL_NO_LEGACY_ALGORITHMS)
-add_definitions(-DOPENSSL_NO_WEAK_SSL_CIPHERS)
-add_definitions(-DOPENSSL_NO_DTLS)
-add_definitions(-DOPENSSL_NO_PSK)
-add_definitions(-DOPENSSL_NO_SRP)
-add_definitions(-DOPENSSL_SMALL_CODE)
-
-EOFCMAKE
+            cat > CMakeLists_new.txt << 'CMAKEEOF'
+        cmake_minimum_required(VERSION 3.5)
+        
+        project(BoringSSL LANGUAGES C CXX)
+        
+        # Minimal build - libraries only
+        option(BUILD_TESTING "Build tests" OFF)
+        option(BUILD_TOOLS "Build tools" OFF)
+        
+        # Minimal feature definitions
+        add_definitions(-DOPENSSL_NO_LEGACY_ALGORITHMS)
+        add_definitions(-DOPENSSL_NO_WEAK_SSL_CIPHERS)
+        add_definitions(-DOPENSSL_NO_DTLS)
+        add_definitions(-DOPENSSL_NO_PSK)
+        add_definitions(-DOPENSSL_NO_SRP)
+        add_definitions(-DOPENSSL_SMALL_CODE)
+        
+        CMAKEEOF
             
             # Append the main content (skip the first few lines)
             tail -n +4 CMakeLists_minimal.txt >> CMakeLists_new.txt
             
             # Add early return to skip tests/tools
-            cat >> CMakeLists_new.txt << 'EOFCMAKE'
-
-# Early return - build only crypto and ssl libraries
-message(STATUS "Minimal build: skipping tests and tools")
-return()
-EOFCMAKE
+            cat >> CMakeLists_new.txt << 'CMAKEEOF'
+        
+        # Early return - build only crypto and ssl libraries
+        message(STATUS "Minimal build: skipping tests and tools")
+        return()
+        CMAKEEOF
             
             mv CMakeLists_new.txt CMakeLists.txt
             echo "✅ Manual CMake modification applied"
@@ -416,27 +416,27 @@ EOFCMAKE
         done
         
         # Create a minimal config header
-        cat > "$ARTIFACTS_DIR/include/openssl/boringssl_minimal.h" << 'EOF'
-#ifndef BORINGSSL_MINIMAL_H
-#define BORINGSSL_MINIMAL_H
-
-// Minimal BoringSSL build for Android HTTP/3
-// Optimized for: curl, nghttp2, ngtcp2, nghttp3
-
-// Supported TLS versions: 1.2, 1.3
-// Supported ciphers:
-//   - TLS_AES_128_GCM_SHA256 (hardware accelerated on ARM)
-//   - TLS_CHACHA20_POLY1305_SHA256 (optimized for mobile)
-//   - TLS_AES_256_GCM_SHA384
-
-// Key exchange: X25519, P-256
-// Signatures: Ed25519, ECDSA P-256, RSA-PSS
-
-#define BORINGSSL_MINIMAL_BUILD 1
-#define BORINGSSL_ANDROID_BUILD 1
-
-#endif
-EOF
+        cat > "$ARTIFACTS_DIR/include/openssl/boringssl_minimal.h" << 'HEADEREOF'
+        #ifndef BORINGSSL_MINIMAL_H
+        #define BORINGSSL_MINIMAL_H
+        
+        // Minimal BoringSSL build for Android HTTP/3
+        // Optimized for: curl, nghttp2, ngtcp2, nghttp3
+        
+        // Supported TLS versions: 1.2, 1.3
+        // Supported ciphers:
+        //   - TLS_AES_128_GCM_SHA256 (hardware accelerated on ARM)
+        //   - TLS_CHACHA20_POLY1305_SHA256 (optimized for mobile)
+        //   - TLS_AES_256_GCM_SHA384
+        
+        // Key exchange: X25519, P-256
+        // Signatures: Ed25519, ECDSA P-256, RSA-PSS
+        
+        #define BORINGSSL_MINIMAL_BUILD 1
+        #define BORINGSSL_ANDROID_BUILD 1
+        
+        #endif
+        HEADEREOF
         
         echo "Final artifact sizes for ${{ matrix.arch }}:"
         ls -lah "$ARTIFACTS_DIR/lib/"
@@ -488,21 +488,106 @@ EOF
           cp -r boringssl-minimal-android-arm64-v8a/include boringssl-minimal-android/
         fi
         
-        # Create comprehensive README (same as before)
-        cat > boringssl-minimal-android/README.md << 'EOF'
-# BoringSSL Minimal Android Build 🚀
-
-**Ultra-lightweight BoringSSL optimized for Android HTTP/3 clients**
-
-## 📊 Build Stats
-- **Size**: ~3-5MB total (vs 35MB+ standard build)
-- **Performance**: Hardware-accelerated ciphers on ARM
-- **Focus**: HTTP/3, TLS 1.2/1.3, mobile optimization
-
-## 🎯 Optimized For
-- **curl** with HTTP/3 support
-- **nghttp2** (HTTP/2)
-- **ngtcp2** (QUIC transport)
-- **nghttp3** (HTTP/3)
-
-## 🔐 Supported Ciphers (High Performance)
+        # Create comprehensive README
+        cat > boringssl-minimal-android/README.md << 'READMEEOF'
+        # BoringSSL Minimal Android Build 🚀
+        
+        **Ultra-lightweight BoringSSL optimized for Android HTTP/3 clients**
+        
+        ## 📊 Build Stats
+        - **Size**: ~3-5MB total (vs 35MB+ standard build)
+        - **Performance**: Hardware-accelerated ciphers on ARM
+        - **Focus**: HTTP/3, TLS 1.2/1.3, mobile optimization
+        
+        ## 🎯 Optimized For
+        - **curl** with HTTP/3 support
+        - **nghttp2** (HTTP/2)
+        - **ngtcp2** (QUIC transport)
+        - **nghttp3** (HTTP/3)
+        
+        ## 🔐 Supported Ciphers (High Performance)
+        ```
+        TLS 1.3:
+        ✅ TLS_AES_128_GCM_SHA256      (AES-NI/ARM Crypto)
+        ✅ TLS_CHACHA20_POLY1305_SHA256 (Mobile optimized)
+        ✅ TLS_AES_256_GCM_SHA384      (High security)
+        
+        TLS 1.2:
+        ✅ ECDHE-ECDSA-AES128-GCM-SHA256
+        ✅ ECDHE-RSA-AES128-GCM-SHA256
+        ✅ ECDHE-ECDSA-CHACHA20-POLY1305
+        ```
+        
+        Perfect for mobile HTTP/3 clients! 🎯
+        READMEEOF
+        
+        # Create build info with actual sizes
+        cat > boringssl-minimal-android/BUILD_INFO.txt << BUILDEOF
+        BoringSSL Minimal Android Build
+        ================================
+        
+        Build Date: $(date)
+        BoringSSL Release: 0.20250701.0 (minimal)
+        NDK Version: r28b
+        Optimization: -Os (size) + LTO + strip
+        Focus: HTTP/3, mobile performance
+        
+        Architecture Sizes:
+        BUILDEOF
+        
+        # Add actual sizes
+        for arch in armeabi-v7a arm64-v8a x86 x86_64; do
+          if [ -d "boringssl-minimal-android/$arch/lib" ]; then
+            echo "" >> boringssl-minimal-android/BUILD_INFO.txt
+            echo "$arch:" >> boringssl-minimal-android/BUILD_INFO.txt
+            ls -lah boringssl-minimal-android/$arch/lib/ >> boringssl-minimal-android/BUILD_INFO.txt
+          fi
+        done
+        
+        # Calculate total size
+        TOTAL_SIZE=$(du -sh boringssl-minimal-android | cut -f1)
+        echo "" >> boringssl-minimal-android/BUILD_INFO.txt
+        echo "Total Package Size: $TOTAL_SIZE" >> boringssl-minimal-android/BUILD_INFO.txt
+        
+        # Create archive
+        tar -czf boringssl-minimal-android.tar.gz boringssl-minimal-android/
+        
+        echo "=== Final Package Info ==="
+        echo "Package size: $(ls -lah boringssl-minimal-android.tar.gz | awk '{print $5}')"
+        echo "Total libraries: $(find boringssl-minimal-android -name "*.a" | wc -l)"
+        
+    - name: Create Minimal Release
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: boringssl-minimal-0.20250701.0-${{ github.run_number }}
+        name: BoringSSL Minimal 0.20250701.0 (HTTP/3 Optimized) 🚀
+        body: |
+          # BoringSSL Minimal Android Build
+          
+          **Ultra-lightweight BoringSSL optimized for HTTP/3 mobile clients**
+          
+          ## 🎯 Perfect For
+          - **curl** with HTTP/3 support
+          - **nghttp2/nghttp3** integration  
+          - **ngtcp2** QUIC transport
+          - Mobile apps requiring minimal size
+          
+          ## ⚡ Performance Focus
+          - **~4MB total** (vs 35MB+ standard)
+          - **Hardware acceleration** on ARM64/x86
+          - **TLS 1.2/1.3** only
+          - **Fast ciphers**: AES-GCM, ChaCha20-Poly1305
+          
+          ## 🏗️ Architectures
+          - ✅ **arm64-v8a** (AES crypto extensions)
+          - ✅ **armeabi-v7a** (NEON optimized)
+          - ✅ **x86_64** (AES-NI + AVX)
+          - ✅ **x86** (SSE4.2 + AES-NI)
+          
+          Ready for production HTTP/3 clients! 🚀
+        files: |
+          boringssl-minimal-android.tar.gz
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
